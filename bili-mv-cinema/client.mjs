@@ -1249,6 +1249,15 @@ export default function activate(folium) {
       row.setAttribute('data-key', key);
       row.setAttribute('data-current', isCurrent ? '1' : '0');
 
+      // 正在播的这首不用再搜：手上就有它的 MV 封面（可能就是用户手动挑过的那个）。
+      if (isCurrent && state.info && state.info.cover && !thumbOf(key)) {
+        thumbCache.set(key, {
+          cover: state.info.cover,
+          official: state.info.official || 0,
+          bvid: state.info.bvid || '',
+        });
+      }
+
       const thumb = document.createElement('div');
       thumb.className = 'mv-qthumb';
       const img = document.createElement('img');

@@ -106,7 +106,28 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
     queue: 0,
     queueIndex: null,
     toasts: [],
+    fullscreen: 0,
     registered: { settings: [], buttons: [], layers: [], commands: [] },
+  };
+
+  // 宿主的 preload 会暴露 window.electron：右上角那个全屏按钮按的就是它。
+  let fullscreenOn = false;
+  const fullscreenWatchers = [];
+  window.electron = {
+    toggleFullscreenWindow: async () => {
+      calls.fullscreen += 1;
+      fullscreenOn = !fullscreenOn;
+      for (const fn of fullscreenWatchers) fn(fullscreenOn);
+      return fullscreenOn;
+    },
+    isWindowFullscreen: async () => fullscreenOn,
+    onWindowFullscreenChanged: (fn) => {
+      fullscreenWatchers.push(fn);
+      return () => {
+        const index = fullscreenWatchers.indexOf(fn);
+        if (index >= 0) fullscreenWatchers.splice(index, 1);
+      };
+    },
   };
 
   const listeners = new Map();
@@ -318,7 +339,39 @@ function installGlobals(window) {
   assert.equal(root.querySelector('.mv-title').textContent, '晴天');
   assert.equal(root.querySelector('.mv-menu-item[data-active="1"]').getAttribute('data-value'), 'auto');
 
-  // 6. 空格暂停 / Esc 退出
+  // 6. 点画面本身就能暂停 / 继续（不用去够左下角那个按钮）
+  const clickPicture = () => video.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  assert.equal(video.paused, false, '这会儿应该正在播');
+  clickPicture();
+  await flush(2);
+  assert.equal(video.paused, true, '点画面要暂停');
+  clickPicture();
+  await flush(2);
+  assert.equal(video.paused, false, '再点一下要接着播');
+
+  // 点控件不算点画面（不然调个静音都会顺手把片子暂停了）
+  root.querySelector('.mv-btn[title="静音"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await flush(2);
+  assert.equal(video.paused, false, '点控件不该暂停画面');
+
+  // 全屏按钮：走宿主的整窗全屏（就是应用右上角那个按钮），进去之后立刻收起标题与控制条
+  const expandBtn = root.querySelector('.mv-btn[title="整窗全屏"]');
+  assert.ok(expandBtn, '控制条上要有整窗全屏按钮');
+  root.removeAttribute('data-idle');
+  expandBtn.click();
+  await flush(3);
+  assert.equal(calls.fullscreen, 1, '全屏要交给宿主窗口，不是 DOM requestFullscreen');
+  assert.equal(root.getAttribute('data-fs'), '1');
+  assert.equal(root.getAttribute('data-idle'), '1', '进全屏后标题与控制条要收起来');
+
+  // 第一次 Esc 只退全屏，影院还在
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await flush(3);
+  assert.equal(calls.fullscreen, 2, 'Esc 先退全屏');
+  assert.equal(root.getAttribute('data-fs'), '0');
+  assert.equal(root.getAttribute('data-shown'), '1', '退全屏不该把 MV 关掉');
+
+  // 7. 空格暂停 / Esc 退出
   const space = new window.KeyboardEvent('keydown', { key: ' ', bubbles: true });
   window.document.dispatchEvent(space);
   await flush(2);

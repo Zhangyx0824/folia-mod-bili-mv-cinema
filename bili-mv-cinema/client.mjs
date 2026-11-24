@@ -262,6 +262,18 @@ export default function activate(folium) {
   const hostMinor = (folium.host && folium.host.folium && folium.host.folium.minor) || 0;
   const supportsSecret = hostMinor >= 7;
 
+  /**
+   * 窗口自己的全屏接口 —— 也就是应用右上角那个按钮按的东西。
+   *
+   * `document.requestFullscreen()` 在这个窗口里不生效（宿主把整窗全屏交给了主进程），
+   * 所以走 preload 暴露出来的 `window.electron.toggleFullscreenWindow()`；
+   * 老宿主没有这条通道时再退回 HTML 全屏。
+   */
+  const hostWindow =
+    typeof window !== 'undefined' && window.electron && typeof window.electron === 'object'
+      ? window.electron
+      : null;
+
   /* ---------------------------------------------------------------- *
    * 设置
    * ---------------------------------------------------------------- */
@@ -394,6 +406,12 @@ export default function activate(folium) {
      */
     queueIndex: null,
     generation: 0,
+    /** 窗口当前是不是整窗全屏（跟应用右上角那个按钮同一个状态） */
+    windowFullscreen: false,
+    /** 这次全屏是不是我们开的：是的话退出影院时负责退回去 */
+    enteredFullscreen: false,
+    /** 刚进全屏时先忽略一下 mousemove，别让窗口尺寸变化把控制条又弹出来 */
+    fullscreenGraceUntil: 0,
   };
 
   const resolvedCache = new Map(); // songKey → info（同一个视频不重复取流）
@@ -1499,7 +1517,16 @@ export default function activate(folium) {
     state.candidates = [];
     state.keyword = '';
     state.queueIndex = null;
+    state.enteredFullscreen = false;
+    state.fullscreenGraceUntil = 0;
     setQueueOpen(false);
+
+    // 进来之前窗口可能已经是全屏了（用户自己按的右上角那个按钮）：只读一下，不接管。
+    void readHostFullscreen().then((on) => {
+      if (!state.open) return;
+      state.windowFullscreen = on;
+      root.setAttribute('data-fs', on ? '1' : '0');
+    });
 
     kickoff();
     if (settings().pauseMusic) pauseHost();
@@ -1611,11 +1638,84 @@ export default function activate(folium) {
     else if (resume) resumeHost();
     else state.pausedHost = false;
 
-    try {
-      if (document.fullscreenElement) document.exitFullscreen();
-    } catch {
-      /* 浏览器不给退就算了 */
+    root.removeAttribute('data-fs');
+    if (state.enteredFullscreen) {
+      state.enteredFullscreen = false;
+      state.windowFullscreen = false;
+      try {
+        if (hostWindow && typeof hostWindow.toggleFullscreenWindow === 'function') {
+          void hostWindow.toggleFullscreenWindow(); // 退出影院时把窗口全屏还回去
+        } else if (document.fullscreenElement) {
+          void document.exitFullscreen();
+        }
+      } catch {
+        /* 宿主不给退就算了 */
+      }
     }
+  }
+
+  /* ---- 整窗全屏 ---- */
+
+  /** 窗口现在是不是全屏：优先问主进程，问不到再看 HTML 全屏。 */
+  async function readHostFullscreen() {
+    try {
+      if (hostWindow && typeof hostWindow.isWindowFullscreen === 'function') {
+        return Boolean(await hostWindow.isWindowFullscreen());
+      }
+    } catch {
+      /* 老宿主没有这个接口 */
+    }
+    return Boolean(document.fullscreenElement);
+  }
+
+  /**
+   * 全屏的样子就是「只剩画面」：一进全屏立刻把标题条和控制条收起来，
+   * 之后跟平时一样，动鼠标才出来、停手 3 秒再收回去。
+   */
+  function applyFullscreenChrome() {
+    root.setAttribute('data-fs', state.windowFullscreen ? '1' : '0');
+    if (!state.windowFullscreen) return;
+    state.fullscreenGraceUntil = Date.now() + 600;
+    if (video.paused) return; // 暂停时控件本来就在，别收
+    root.setAttribute('data-idle', '1');
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = 0;
+    }
+  }
+
+  /** 进 / 退整窗全屏。返回切换后的状态。 */
+  async function toggleWindowFullscreen() {
+    const before = state.windowFullscreen;
+    let next = !before;
+    try {
+      if (hostWindow && typeof hostWindow.toggleFullscreenWindow === 'function') {
+        const result = await hostWindow.toggleFullscreenWindow();
+        next = typeof result === 'boolean' ? result : await readHostFullscreen();
+      } else if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        next = false;
+      } else {
+        await document.documentElement.requestFullscreen();
+        next = true;
+      }
+    } catch (err) {
+      log.info('MV 影院：整窗全屏切换失败', String((err && err.message) || err));
+      folium.ui.toast('这个窗口不支持整窗全屏', { durationMs: 1800 });
+      return state.windowFullscreen;
+    }
+    state.windowFullscreen = next;
+    // 我们自己开的才负责退：进来之前就已经是全屏的话，退出影院时不管它。
+    if (!before && next) state.enteredFullscreen = true;
+    if (before && !next) state.enteredFullscreen = false;
+    applyFullscreenChrome();
+    return next;
+  }
+
+  /** 退出影院 / 按 Esc 时把全屏还回去（只还我们开的那次）。 */
+  function releaseFullscreen() {
+    if (!state.windowFullscreen) return;
+    void toggleWindowFullscreen();
   }
 
   /* ---- 控件自动隐藏 ---- */
@@ -1635,7 +1735,10 @@ export default function activate(folium) {
     }, 2800);
   }
 
-  root.addEventListener('mousemove', () => poke());
+  root.addEventListener('mousemove', () => {
+    if (Date.now() < state.fullscreenGraceUntil) return;
+    poke();
+  });
   root.addEventListener('pointerdown', () => poke());
 
   /* ---- 键盘 ---- */
@@ -1648,7 +1751,12 @@ export default function activate(folium) {
     const typing = tag === 'INPUT' || tag === 'TEXTAREA';
 
     if (event.key === 'Escape') {
-      if (document.fullscreenElement) return; // 先让浏览器退全屏
+      if (state.windowFullscreen) {
+        releaseFullscreen(); // 全屏时先退全屏，再按一次才关影院
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       if (typing) {
         event.target.blur();
         return;
@@ -1708,6 +1816,23 @@ export default function activate(folium) {
     toggle();
   });
 
+  /**
+   * 点画面本身就能播放 / 暂停。
+   *
+   * 以前只有左下角那个按钮和空格能控制，鼠标在画面上时还得先找到按钮 ——
+   * 跟 QQ 音乐、YouTube 一样，画面就是最大的那个播放键。
+   * 中间弹出来的卡片（加载失败、被拦截）上点不算，那上面有自己的按钮。
+   */
+  root.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    if (!state.open) return;
+    // 点在控件、卡片、播放列表上：那是它们自己的事
+    if (target.closest('.mv-top, .mv-bottom, .mv-queue, .mv-center, .mv-login')) return;
+    if (!video.getAttribute('src')) return; // 还没取到流：画面是黑的，点了也没意义
+    toggle();
+  });
+
   btnMute.addEventListener('click', () => {
     state.muted = !state.muted;
     applyVolume();
@@ -1748,12 +1873,7 @@ export default function activate(folium) {
   document.addEventListener('click', onDocumentClick);
 
   btnExpand.addEventListener('click', () => {
-    try {
-      if (document.fullscreenElement) document.exitFullscreen();
-      else root.requestFullscreen();
-    } catch {
-      folium.ui.toast('这个窗口不支持整窗全屏', { durationMs: 1600 });
-    }
+    void toggleWindowFullscreen();
   });
 
   btnLink.addEventListener('click', () => {
@@ -1921,6 +2041,20 @@ export default function activate(folium) {
   subscribe('account.changed', () => {
     resolvedCache.clear();
   });
+
+  // 用户自己按了窗口右上角的全屏按钮（或 ⌃⌘F）：MV 页也跟着把标题与控制条收起来。
+  try {
+    if (hostWindow && typeof hostWindow.onWindowFullscreenChanged === 'function') {
+      const off = hostWindow.onWindowFullscreenChanged((on) => {
+        state.windowFullscreen = Boolean(on);
+        if (!on) state.enteredFullscreen = false;
+        applyFullscreenChrome();
+      });
+      if (typeof off === 'function') unsubscribers.push(off);
+    }
+  } catch {
+    /* 老宿主没有这条事件 */
+  }
 
   /* ---- 命令面板 ---- */
 

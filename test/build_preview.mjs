@@ -43,12 +43,6 @@ const QUEUE_SONGS = [
 
 const songKeyOf = (title, artist) => `${title}\u241F${artist}`.toLowerCase();
 
-/** 预览里的歌词：一句主歌词 + 一句翻译，用真 ed sheeran 的歌词。 */
-const PREVIEW_LYRIC = {
-  main: 'We keep this love in a photograph',
-  sub: '我们把爱留在照片里',
-};
-
 /* ------------------------------------------------------------------ *
  * 1. 真去 B 站要一个 MV，并截一帧
  * ------------------------------------------------------------------ */
@@ -98,7 +92,7 @@ const headers = 'Referer: https://www.bilibili.com/\r\nUser-Agent: Mozilla/5.0\r
 /**
  * 挑一帧「没有烧进字幕、而且画面本身不难看」的画面。
  *
- * 这支 MV 自带官方中字，而预览图里同时出现「画面里的字幕 + 模组叠的歌词」会看着像 bug。
+ * 这支 MV 自带官方中字，压在底部的控制条会把它挡掉一半，看着像 bug。
  * 做法：几个时间点各取一帧，一次 ffmpeg 里同时量
  *   · 画面底部 16% 的最亮值（有白色字幕就会很亮）；
  *   · 整帧平均亮度（太黑的一片糊也不好当封面）。
@@ -237,7 +231,6 @@ const RESULT = ${JSON.stringify({ ...info, quality: { ...info.quality, label: '1
 const PREVIEWS = ${JSON.stringify(previews)};
 const QUEUE_SONGS = ${JSON.stringify(QUEUE_SONGS)};
 const SONG = ${JSON.stringify(SONG)};
-const LYRIC = ${JSON.stringify(PREVIEW_LYRIC)};
 
 const songKeyOf = (title, artist) => \`\${title}\\u241F\${artist}\`.toLowerCase();
 const queueSongs = QUEUE_SONGS.map((song, index) => ({
@@ -257,13 +250,6 @@ const folium = {
   host: { folium: { major: 1, minor: 9 } },
   log: { info(){}, warn(){}, error(){}, debug(){} },
   storage: { get: async () => null, set: async () => {} },
-  lyrics: {
-    getLines: () => [
-      { fullText: '作词：Ed Sheeran', startTime: 0, endTime: 6 },
-      { fullText: LYRIC.main, startTime: 6, endTime: 12, translation: LYRIC.sub },
-    ],
-    refresh(){},
-  },
   playback: {
     getState: () => ({ song: SONG, state: 'paused', position: 0, duration: ${SONG.duration} }),
     pause(){}, play(){},
@@ -278,12 +264,16 @@ const folium = {
     },
   },
   rpc: {
-    call: async (name) => (name === 'mvPreview' ? { ok: true, results: PREVIEWS } : RESULT),
+    call: async (name) => {
+      if (name === 'mvPreview') return { ok: true, results: PREVIEWS };
+      if (name === 'biliStatus') return { ok: true, loggedIn: true, uname: 'pomepii', vip: true };
+      return RESULT;
+    },
   },
   secrets: { set: async () => {} },
   ui: { toast(){}, navigate(){}, openPlayerPanel(){}, openHomeTab(){} },
   registries: {
-    settingsSections: { register: (def) => ({ id: def.id, settings: { get: () => ({ quality: 'auto', pauseMusic: false, showLyrics: true, autoNext: true, volume: 90 }) } }) },
+    settingsSections: { register: (def) => ({ id: def.id, settings: { get: () => ({ quality: 'auto', pauseMusic: false, autoNext: true, volume: 90 }) } }) },
     progressButtons: { register: (def) => { window.__btn = def; return () => {}; } },
     stageLayers: { register: (def) => { window.__layer = def; return () => {}; } },
     commands: { register: () => () => {} },
@@ -336,15 +326,7 @@ await new Promise((r) => setTimeout(r, 250));
 root.querySelector('.mv-controls .mv-btn.round').innerHTML =
   '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="5" width="4" height="14" rx="1.4"/><rect x="13.5" y="5" width="4" height="14" rx="1.4"/></svg>';
 
-// 歌词：把时钟推到第一句中间，再让模组自己算该显示哪句
-// （timeupdate 会顺手刷新进度条，所以时间/填充要在它之后再写）
-Object.defineProperty(video, 'currentTime', {
-  configurable: true,
-  get: () => 8,
-  set: () => {},
-});
-video.dispatchEvent(new Event('timeupdate'));
-
+// 进度条装成「播到 1:29 / 4:18」
 root.querySelector('.mv-fill').style.width = '37.6%';
 root.querySelector('.mv-knob').style.left = '37.6%';
 const times = root.querySelectorAll('.mv-time');

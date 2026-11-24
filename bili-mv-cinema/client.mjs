@@ -87,6 +87,8 @@ const CSS = `
 .mv-btn.round{width:36px;height:36px;border-radius:50%;flex:none}
 .mv-btn.ghost{background:rgba(0,0,0,.34);border-color:rgba(255,255,255,.14)}
 .mv-btn.tall{padding:0 11px;height:30px;border-radius:8px}
+.mv-btn.compact{padding:0 9px}
+.mv-btn.small{width:30px;height:30px;border-radius:8px;flex:none}
 
 /* 底部控制条 */
 .mv-bottom{position:absolute;left:0;right:0;bottom:0;padding:46px 24px 18px;
@@ -156,19 +158,6 @@ const CSS = `
 .mv-bigplay:hover{background:rgba(255,255,255,.24);transform:scale(1.04)}
 .mv-bigplay svg{width:30px;height:30px;margin-left:3px}
 
-/* 歌词：一行，压在控制条上方。只在有歌词且没被关掉时才占位。 */
-.mv-lyric{position:absolute;left:0;right:0;bottom:150px;display:flex;flex-direction:column;align-items:center;
-  gap:5px;padding:0 15%;pointer-events:none;text-align:center;
-  transition:opacity .3s ease,transform .3s ease,right .3s cubic-bezier(.22,.7,.3,1)}
-.mv-lyric[data-empty="1"]{opacity:0;transform:translateY(9px)}
-.mv-lyric-main{font-size:17.5px;font-weight:600;line-height:1.45;letter-spacing:.01em;color:#fff;
-  text-shadow:0 2px 16px rgba(0,0,0,.78);max-width:100%;padding:5px 16px;border-radius:11px;
-  background:rgba(0,0,0,.26);backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px)}
-.mv-lyric-sub{font-size:12.5px;line-height:1.5;color:rgba(255,255,255,.78);
-  text-shadow:0 1px 12px rgba(0,0,0,.72);max-width:100%}
-.mv-lyric[data-anim="1"] .mv-lyric-main{animation:mvline .34s cubic-bezier(.22,.7,.3,1)}
-@keyframes mvline{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
-
 /* 播放列表：右侧抽屉，跟 QQ 音乐一样把接下来要看的 MV 都摊开 */
 .mv-queue{position:absolute;top:0;right:0;bottom:0;width:312px;display:flex;flex-direction:column;
   background:linear-gradient(to left,rgba(13,13,15,.97),rgba(13,13,15,.93));
@@ -205,10 +194,9 @@ const CSS = `
 @keyframes mvbars{0%,100%{height:3px}50%{height:11px}}
 .mv-qempty{padding:18px 12px;font-size:12px;line-height:1.7;color:rgba(255,255,255,.42)}
 
-/* 播放列表拉开时：控件、歌词都让出右边那条 */
+/* 播放列表拉开时：控件让出右边那条 */
 .mv-root[data-queue="1"] .mv-top{right:312px}
 .mv-root[data-queue="1"] .mv-bottom{right:312px}
-.mv-root[data-queue="1"] .mv-lyric{right:312px}
 
 /* 控件自动隐藏 */
 .mv-root[data-idle="1"] .mv-top,.mv-root[data-idle="1"] .mv-bottom{opacity:0;pointer-events:none}
@@ -278,7 +266,32 @@ export default function activate(folium) {
    * 设置
    * ---------------------------------------------------------------- */
 
+  /**
+   * 设置项的**顺序就是界面上看到的顺序**。
+   *
+   * 只留下「看 MV 这件事本身」的开关：暂停音乐、连播、画质、音量。
+   */
   const schema = [
+    {
+      key: 'pauseMusic',
+      type: 'boolean',
+      defaultValue: true,
+      label: label('看 MV 时暂停音乐', 'Pause the music while the MV plays'),
+      description: label(
+        '关掉的话两路声音会一起响 —— 除非你只是想看看画面。',
+        'Turn it off and both soundtracks play at once.',
+      ),
+    },
+    {
+      key: 'autoNext',
+      type: 'boolean',
+      defaultValue: true,
+      label: label('一段放完接着看下一首', 'Roll on to the next MV'),
+      description: label(
+        '按 Folia 的播放队列顺序连播：一支 MV 放完就切到队列里的下一首，MV 跟着换过去。关掉就停在最后一帧。',
+        'Follows the queue order: when an MV ends, the next song in the queue starts and its MV loads.',
+      ),
+    },
     {
       key: 'quality',
       type: 'select',
@@ -295,36 +308,6 @@ export default function activate(folium) {
         { value: '720p', label: label('720P', '720p') },
         { value: '480p', label: label('480P', '480p') },
       ],
-    },
-    {
-      key: 'pauseMusic',
-      type: 'boolean',
-      defaultValue: true,
-      label: label('看 MV 时暂停音乐', 'Pause the music while the MV plays'),
-      description: label(
-        '关掉的话两路声音会一起响 —— 除非你只是想看看画面。',
-        'Turn it off and both soundtracks play at once.',
-      ),
-    },
-    {
-      key: 'showLyrics',
-      type: 'boolean',
-      defaultValue: true,
-      label: label('叠一行歌词', 'Show one lyric line'),
-      description: label(
-        '画面底部居中显示当前这一句（有翻译的话带翻译）。MV 带前奏时可能对不齐，播放时按 [ / ] 各调 0.2 秒，调过会按这支 MV 记住。',
-        'Shows the current lyric line over the video. Nudge the timing with [ and ] — remembered per video.',
-      ),
-    },
-    {
-      key: 'autoNext',
-      type: 'boolean',
-      defaultValue: true,
-      label: label('一段放完接着看下一首', 'Roll on to the next MV'),
-      description: label(
-        '按 Folia 的播放队列顺序连播：一支 MV 放完就切到队列里的下一首，MV 跟着换过去。关掉就停在最后一帧。',
-        'Follows the queue order: when an MV ends, the next song in the queue starts and its MV loads.',
-      ),
     },
     {
       key: 'volume',
@@ -378,7 +361,6 @@ export default function activate(folium) {
     return {
       quality: qualityList.includes(raw.quality) ? raw.quality : 'auto',
       pauseMusic: raw.pauseMusic !== false,
-      showLyrics: raw.showLyrics !== false,
       autoNext: raw.autoNext !== false,
       volume: Number.isFinite(volume) ? clamp(volume, 0, 100) : 90,
     };
@@ -403,7 +385,14 @@ export default function activate(folium) {
     lastError: '',
     dragging: false,
     queueOpen: false,
-    lyricOffset: 0,
+    /**
+     * 从播放列表点进来时记住那一行的队列下标。
+     *
+     * 点一行**不动宿主**（宿主一换歌就会跳到它自己的播放页，MV 页就没了）：
+     * 宿主的位置留到退出影院时再同步过去，音乐从那首接着放。
+     * null = 没点过列表，跟宿主当前的歌走。
+     */
+    queueIndex: null,
     generation: 0,
   };
 
@@ -742,18 +731,6 @@ export default function activate(folium) {
   bottom.appendChild(controls);
   root.appendChild(bottom);
 
-  /* --- 歌词：一行 --- */
-  const lyricWrap = document.createElement('div');
-  lyricWrap.className = 'mv-lyric';
-  lyricWrap.setAttribute('data-empty', '1');
-  const lyricMain = document.createElement('div');
-  lyricMain.className = 'mv-lyric-main';
-  const lyricSub = document.createElement('div');
-  lyricSub.className = 'mv-lyric-sub';
-  lyricWrap.appendChild(lyricMain);
-  lyricWrap.appendChild(lyricSub);
-  root.appendChild(lyricWrap);
-
   /* --- 播放列表（右侧抽屉） --- */
   const queuePanel = document.createElement('aside');
   queuePanel.className = 'mv-queue';
@@ -930,7 +907,6 @@ export default function activate(folium) {
 
   video.addEventListener('timeupdate', () => {
     updateProgress();
-    paintLyric(false);
   });
   video.addEventListener('durationchange', updateProgress);
   video.addEventListener('loadedmetadata', () => {
@@ -964,11 +940,7 @@ export default function activate(folium) {
     syncPlayIcon();
     poke(true);
     if (!state.open) return;
-    if (!settings().autoNext) {
-      lyricIndex = -2;
-      paintLyric(true);
-      return;
-    }
+    if (!settings().autoNext) return;
     advanceQueue();
   });
   video.addEventListener('error', () => {
@@ -982,150 +954,6 @@ export default function activate(folium) {
     audio.removeAttribute('src');
     video.muted = state.muted;
   });
-
-  /* ---------------------------------------------------------------- *
-   * 歌词：一行
-   *
-   * 看 MV 时宿主的音乐是暂停的，所以歌词时钟只能用画面自己的 currentTime。
-   * MV 常常带前奏 / 对白，跟原曲对不齐是常态 —— 给一个 0.2 秒一档的手动偏移，
-   * 按 bvid 记住：同一支 MV 只需要调一次。
-   * ---------------------------------------------------------------- */
-
-  /** 歌词前部的「作词 / 作曲 / 编曲」这类标注行不当作歌词。 */
-  const LYRIC_META =
-    /^(作词|作曲|编曲|制作人|制作|监制|出品|发行|混音|母带|录音|吉他|贝斯|鼓|键盘|和声|弦乐|校对|翻译|词|曲|编)\s*[：:]/;
-  const LYRIC_OFFSET_KEY = 'bili-mv-cinema:lyric-offset:';
-
-  let lyricLines = [];
-  let lyricIndex = -2;
-  let lyricBvid = '';
-
-  function loadLyricOffset(bvid) {
-    if (!bvid) return 0;
-    try {
-      const value = Number(window.localStorage.getItem(LYRIC_OFFSET_KEY + bvid));
-      if (Number.isFinite(value) && Math.abs(value) <= 15000) return value;
-    } catch {
-      /* 隐私模式没有 localStorage */
-    }
-    return 0;
-  }
-
-  function saveLyricOffset() {
-    if (!lyricBvid) return;
-    try {
-      window.localStorage.setItem(LYRIC_OFFSET_KEY + lyricBvid, String(state.lyricOffset));
-    } catch {
-      /* 同上 */
-    }
-  }
-
-  function lyricLinesFrom(raw) {
-    const out = [];
-    if (!Array.isArray(raw)) return out;
-    for (const line of raw) {
-      const text = String((line && line.fullText) || '').trim();
-      const start = Number(line && line.startTime);
-      if (!text || !Number.isFinite(start) || start < 0) continue;
-      if (LYRIC_META.test(text)) continue;
-      const end = Number(line && line.endTime);
-      const sub = String((line && (line.translation || line.romanization)) || '').trim();
-      out.push({ start, end: Number.isFinite(end) && end > start ? end : start + 6, text, sub });
-    }
-    out.sort((a, b) => a.start - b.start);
-    return out;
-  }
-
-  function refreshLyrics() {
-    let raw = [];
-    try {
-      if (folium.lyrics && typeof folium.lyrics.getLines === 'function') {
-        raw = folium.lyrics.getLines() || [];
-      }
-    } catch {
-      raw = [];
-    }
-    lyricLines = lyricLinesFrom(raw);
-
-    // 没拿到歌词时，试试在线源（omni 公开接口），失败就当没歌词。
-    if (!lyricLines.length && state.song && folium.omni && typeof folium.omni.getLyrics === 'function') {
-      Promise.resolve(folium.omni.getLyrics(state.song))
-        .then((result) => {
-          const lines = lyricLinesFrom(result && result.lines);
-          if (!lines.length || !state.open) return;
-          lyricLines = lines;
-          lyricIndex = -2;
-          paintLyric(true);
-        })
-        .catch(() => {});
-    }
-
-    lyricIndex = -2;
-    paintLyric(true);
-  }
-
-  function paintLyric(force) {
-    const enabled = settings().showLyrics;
-    if (!enabled || !state.open || !lyricLines.length) {
-      if (force || !enabled) lyricWrap.setAttribute('data-empty', '1');
-      return;
-    }
-
-    const clock = (video.currentTime || 0) + state.lyricOffset / 1000;
-
-    // 二分找「最后一个开始时间 <= 当前时间」的那句
-    let lo = 0;
-    let hi = lyricLines.length - 1;
-    let index = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (lyricLines[mid].start <= clock) {
-        index = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-
-    // 长间奏：上一句挂太久就收掉，别一直停在屏幕上
-    if (index >= 0 && clock > lyricLines[index].end + 2.5) index = -1;
-
-    if (index === lyricIndex && !force) return;
-    lyricIndex = index;
-
-    if (index < 0) {
-      lyricWrap.setAttribute('data-empty', '1');
-      return;
-    }
-
-    const line = lyricLines[index];
-    lyricMain.textContent = line.text;
-    lyricSub.textContent = line.sub || '';
-    lyricSub.style.display = line.sub ? 'block' : 'none';
-    lyricWrap.setAttribute('data-empty', '0');
-
-    // 重放入场动画
-    lyricWrap.removeAttribute('data-anim');
-    void lyricWrap.offsetWidth;
-    lyricWrap.setAttribute('data-anim', '1');
-  }
-
-  function nudgeLyric(deltaMs) {
-    if (!lyricLines.length) {
-      folium.ui.toast('这首歌没有歌词', { durationMs: 1600 });
-      return;
-    }
-    state.lyricOffset = clamp(state.lyricOffset + deltaMs, -15000, 15000);
-    saveLyricOffset();
-    paintLyric(true);
-    const seconds = Math.abs(state.lyricOffset / 1000).toFixed(1);
-    folium.ui.toast(
-      state.lyricOffset === 0
-        ? '歌词偏移已归零'
-        : `歌词${state.lyricOffset > 0 ? '延后' : '提前'} ${seconds}s`,
-      { durationMs: 1400 },
-    );
-  }
 
   /* ---------------------------------------------------------------- *
    * 播放列表：右侧抽屉
@@ -1224,11 +1052,13 @@ export default function activate(folium) {
       return;
     }
 
-    const currentIndex = Number.isFinite(snap.currentIndex) ? snap.currentIndex : 0;
+    // 看片期间宿主不动，所以「看到第几首」以 state.queueIndex 为准；
+    // 没在列表里点过，才用宿主自己的 currentIndex。
+    const hostIndex = Number.isFinite(snap.currentIndex) ? snap.currentIndex : 0;
+    const currentIndex = Number.isFinite(state.queueIndex) ? state.queueIndex : hostIndex;
     const total = Number(snap.length) || snap.items.length;
-    const items = snap.items
-      .filter((item) => item && item.song && Number(item.index) >= currentIndex)
-      .slice(0, 60);
+    // 整条队列都列出来（当前这首高亮）：点列表不再挪动宿主，往回点几首也该点得到。
+    const items = snap.items.filter((item) => item && item.song).slice(0, 60);
 
     queueCount.textContent = items.length ? `${currentIndex + 1}/${total}` : '';
 
@@ -1238,8 +1068,8 @@ export default function activate(folium) {
     for (const item of items) {
       const song = item.song;
       const key = songKey(song);
-      // 队列的 currentIndex 是宿主的事实；拿不到时再按歌名兜底。
-      const isCurrent = Number.isFinite(snap.currentIndex)
+      // 先看内部位置，拿不到再按歌名兜底。
+      const isCurrent = Number.isFinite(currentIndex)
         ? Number(item.index) === currentIndex
         : key === currentKey;
 
@@ -1308,7 +1138,7 @@ export default function activate(folium) {
       }
 
       row.addEventListener('click', () => {
-        void playQueueIndex(Number(item.index));
+        void playQueueRow(Number(item.index));
       });
 
       queueList.appendChild(row);
@@ -1317,17 +1147,49 @@ export default function activate(folium) {
     void loadThumbs(pending);
   }
 
-  async function playQueueIndex(index) {
+  function queueItemAt(index) {
+    const snap = queueSnapshot();
+    if (!snap) return null;
+    return snap.items.find((item) => item && Number(item.index) === index) || null;
+  }
+
+  /**
+   * 点播放列表里的一行：**就地放这一行的 MV**。
+   *
+   * 关键是「不碰宿主」：宿主的 playQueueItem / playSong 会顺手打开它自己的播放页，
+   * 把 MV 页顶掉 —— 用户看到的就是「点了列表里的某一支 MV，却跳去歌曲播放界面」。
+   * 所以看片期间只记下这一行的队列下标（退出影院时再让宿主跟过去），
+   * 画面这一边用这一行已经搜到的 bvid 直接取流；没有 bvid 才按它的歌名搜一次。
+   */
+  async function playQueueRow(index) {
     if (!Number.isFinite(index)) return;
-    try {
-      const ok = await folium.playback.playQueueItem(index);
-      if (ok === false) folium.ui.toast('这首歌现在播不了', { durationMs: 2200 });
-    } catch (err) {
-      folium.ui.toast(`切歌失败：${String((err && err.message) || err)}`, {
-        type: 'error',
-        durationMs: 2600,
-      });
+    const entry = queueItemAt(index);
+    const song = entry && entry.song;
+    if (!song) return;
+
+    const key = songKey(song);
+    const sameSong = Boolean(state.song) && key === songKey(state.song);
+
+    if (sameSong && state.phase === 'playing' && state.queueIndex === index) {
+      seekTo(0);
+      return;
     }
+
+    const cached = thumbOf(key);
+    const bvid = (cached && cached.bvid) || pinned.get(key) || '';
+
+    state.queueIndex = index;
+    state.song = song;
+    state.generation += 1;
+    state.keyword = '';
+    state.candidates = [];
+    state.qualityOverride = '';
+    clearMedia();
+    applyVolume();
+    renderQueue();
+
+    if (bvid) void resolve({ bvid });
+    else void resolve({});
   }
 
   function setQueueOpen(flag) {
@@ -1342,14 +1204,18 @@ export default function activate(folium) {
     }
   }
 
-  /** MV 放完：队列里还有下一首就交给宿主换歌，换歌事件会把 MV 也带过去。 */
+  /** MV 放完：队列里还有下一首就接着放它的 MV（同样不动宿主）。 */
   function advanceQueue() {
     const snap = queueSnapshot();
     if (!snap) return false;
     const total = Number(snap.length) || snap.items.length;
-    const currentIndex = Number.isFinite(snap.currentIndex) ? snap.currentIndex : 0;
+    const currentIndex = Number.isFinite(state.queueIndex)
+      ? state.queueIndex
+      : Number.isFinite(snap.currentIndex)
+        ? snap.currentIndex
+        : 0;
     if (currentIndex + 1 >= total) return false;
-    void playQueueIndex(currentIndex + 1);
+    void playQueueRow(currentIndex + 1);
     return true;
   }
 
@@ -1606,12 +1472,6 @@ export default function activate(folium) {
       const active = item.getAttribute('data-value') === (state.qualityOverride || settings().quality);
       item.setAttribute('data-active', active ? '1' : '0');
     }
-
-    // 换了一支视频 → 换一套歌词偏移
-    if (info.bvid && info.bvid !== lyricBvid) {
-      lyricBvid = info.bvid;
-      state.lyricOffset = loadLyricOffset(lyricBvid);
-    }
   }
 
   /* ---- 打开 / 关闭 ---- */
@@ -1638,16 +1498,12 @@ export default function activate(folium) {
     state.qualityOverride = '';
     state.candidates = [];
     state.keyword = '';
-    state.lyricOffset = 0;
-    lyricBvid = '';
-    lyricLines = [];
-    lyricIndex = -2;
+    state.queueIndex = null;
     setQueueOpen(false);
 
     kickoff();
     if (settings().pauseMusic) pauseHost();
     applyVolume();
-    refreshLyrics();
 
     const cached = resolvedCache.get(songKey(song));
     if (cached) {
@@ -1664,8 +1520,8 @@ export default function activate(folium) {
   /**
    * 换歌：MV 跟着换，而不是关掉。
    *
-   * 队列连播、点播放列表、宿主媒体键切歌都会走到这里 —— 以前是直接收场，
-   * 现在既然有播放列表，跟着换才是用户期待的。真的没歌声了才关。
+   * 队列连播、宿主媒体键切歌都会走到这里。真的没歌声了才关。
+   * （在播放列表里点的那一行不走这条路 —— 那条路压根不动宿主。）
    */
   function followSong(song) {
     state.song = song;
@@ -1673,14 +1529,10 @@ export default function activate(folium) {
     state.keyword = '';
     state.candidates = [];
     state.qualityOverride = '';
-    lyricLines = [];
-    lyricIndex = -2;
-    lyricWrap.setAttribute('data-empty', '1');
-
+    state.queueIndex = null;
     clearMedia();
     if (settings().pauseMusic) pauseHost();
     applyVolume();
-    refreshLyrics();
     renderQueue();
 
     const cached = resolvedCache.get(songKey(song));
@@ -1695,8 +1547,44 @@ export default function activate(folium) {
     void resolve(mine ? { bvid: mine } : {});
   }
 
+  /**
+   * 把宿主的队列位置挪到刚看的那首 —— **只在退出影院之后做**。
+   *
+   * 原因：宿主的 playQueueItem / playSong 会顺手打开它自己的播放页，把 MV 页顶掉。
+   * 这就是「在列表里点了某一支 MV，却跳去歌曲播放界面」的根源。所以看片期间一律不动宿主，
+   * 等 MV 收起来了再把位置补上，音乐从那首接着放。
+   */
+  function syncHostTo(index) {
+    state.pausedHost = false;
+    const snap = queueSnapshot();
+    const hostIndex = snap && Number.isFinite(snap.currentIndex) ? snap.currentIndex : -1;
+
+    // 切成了就让宿主自己放；没切成（宿主拒收 / 老宿主没这接口）也把刚才那首接着放。
+    const settle = () => {
+      try {
+        folium.playback.play();
+      } catch {
+        /* 宿主这时可能正在换歌，等它自己稳下来 */
+      }
+    };
+
+    if (hostIndex === index) {
+      settle();
+      return;
+    }
+
+    Promise.resolve(folium.playback.playQueueItem(index))
+      .then(settle)
+      .catch((err) => {
+        log.info('MV 影院：退出时没能把宿主队列切过去', String((err && err.message) || err));
+        settle();
+      });
+  }
+
   function close(resume = true) {
     if (!state.open) return;
+    const watched = state.queueIndex; // 列表里点的那一行；没点过是 null
+    state.queueIndex = null;
     state.open = false;
     state.generation += 1;
     state.phase = 'idle';
@@ -1704,9 +1592,6 @@ export default function activate(folium) {
     hideCenter();
     clearMedia();
     setQueueOpen(false);
-    lyricLines = [];
-    lyricIndex = -2;
-    lyricWrap.setAttribute('data-empty', '1');
     root.setAttribute('data-shown', '0');
     root.setAttribute('data-idle', '0');
     if (hideTimer) {
@@ -1722,7 +1607,8 @@ export default function activate(folium) {
       if (!state.open) root.setAttribute('data-open', '0');
     }, 220);
 
-    if (resume) resumeHost();
+    if (watched !== null && resume) syncHostTo(watched);
+    else if (resume) resumeHost();
     else state.pausedHost = false;
 
     try {
@@ -1807,26 +1693,6 @@ export default function activate(folium) {
       event.stopPropagation();
       return;
     }
-    if (event.key === '[') {
-      nudgeLyric(-200);
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-    if (event.key === ']') {
-      nudgeLyric(200);
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-    if (event.key === '\\') {
-      state.lyricOffset = 0;
-      saveLyricOffset();
-      paintLyric(true);
-      folium.ui.toast('歌词偏移已归零', { durationMs: 1400 });
-      event.preventDefault();
-      event.stopPropagation();
-    }
   }
 
   /* ---- 按钮 ---- */
@@ -1836,6 +1702,7 @@ export default function activate(folium) {
   btnPlay.addEventListener('click', () => toggle());
   btnQueue.addEventListener('click', () => setQueueOpen(!state.queueOpen));
   btnQueueClose.addEventListener('click', () => setQueueOpen(false));
+
   bigPlay.addEventListener('click', () => {
     showBlocked(false);
     toggle();
@@ -2013,7 +1880,7 @@ export default function activate(folium) {
     },
   });
 
-  // 换歌：MV 跟着换（队列连播 / 播放列表点选 / 宿主媒体键都走这条路）。
+  // 换歌：MV 跟着换（宿主媒体键 / 自动下一首都走这条路）。
   const unsubscribers = [];
   function subscribe(name, handler) {
     try {
@@ -2033,14 +1900,6 @@ export default function activate(folium) {
     }
     if (state.song && songKey(song) === songKey(state.song)) return;
     followSong(song);
-  });
-
-  // 歌词是异步解析的：换歌之后才到齐很常见。
-  subscribe('lyrics.loaded', (payload) => {
-    if (!state.open) return;
-    const song = (payload && payload.song) || state.song;
-    if (song && state.song && songKey(song) !== songKey(state.song)) return;
-    refreshLyrics();
   });
 
   subscribe('playback.queueChanged', () => {

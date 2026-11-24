@@ -37,16 +37,11 @@ const QUEUE = ['晴天', '七里香', '稻香'].map((title, index) => ({
   },
 }));
 
-/** 歌词：三句，够测「播到哪句」和「元数据行要过滤掉」。 */
-const LYRICS = [
-  { fullText: '作词：周杰伦', startTime: 0, endTime: 4 },
-  { fullText: '故事的小黄花', startTime: 2, endTime: 7, translation: 'The little yellow flower' },
-  { fullText: '从出生那年就飘着', startTime: 7.5, endTime: 13 },
-];
-
 const OK_RESULT = {
   ok: true,
   bvid: 'BV1xx411c7mD',
+  typename: 'MV',
+  official: 2,
   title: '周杰伦 - 晴天 MV',
   author: '周杰伦',
   cover: 'https://i0.hdslb.com/bfs/archive/x.jpg',
@@ -109,12 +104,18 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
     pause: 0,
     play: 0,
     queue: 0,
+    queueIndex: null,
     toasts: [],
     registered: { settings: [], buttons: [], layers: [], commands: [] },
   };
 
   const listeners = new Map();
-  const settingsValues = { quality: 'auto', pauseMusic: true, showLyrics: true, autoNext: true, volume: 90 };
+  const settingsValues = {
+    quality: 'auto',
+    pauseMusic: true,
+    autoNext: true,
+    volume: 90,
+  };
 
   const folium = {
     env: { context: 'main' },
@@ -123,10 +124,6 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
     storage: {
       get: async () => null,
       set: async () => {},
-    },
-    lyrics: {
-      getLines: () => LYRICS,
-      refresh: () => {},
     },
     playback: {
       getState: () => ({ song, state: 'playing', position: 12, duration: 270 }),
@@ -145,6 +142,7 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
       }),
       playQueueItem: async (index) => {
         calls.queue += 1;
+        calls.queueIndex = index;
         return index >= 0 && index < QUEUE.length;
       },
     },
@@ -242,7 +240,7 @@ function installGlobals(window) {
 }
 
 /* ------------------------------------------------------------------ *
- * 场景 1：点按钮 → 找到 MV → 全屏播放 → Esc 退出
+ * 场景 1：点按钮 → 找到 MV → 全屏播放 → 播放列表 → Esc 退出
  * ------------------------------------------------------------------ */
 
 {
@@ -252,11 +250,11 @@ function installGlobals(window) {
   const { default: activate } = await import(pathToFileURL(clientPath).href);
   const dispose = activate(folium);
 
-  // 1. 设置项：画质 / 暂停 / 歌词 / 连播 / 音量 / cookie（secret 只在 1.7+ 出现）
+  // 1. 设置项：暂停 / 连播 / 画质 / 音量 / cookie（secret 只在 1.7+ 出现）
   const section = calls.registered.settings[0];
   assert.ok(section, '必须注册设置分区');
   const keys = section.settings.map((item) => item.key);
-  assert.deepEqual(keys, ['quality', 'pauseMusic', 'showLyrics', 'autoNext', 'volume', 'cookie']);
+  assert.deepEqual(keys, ['pauseMusic', 'autoNext', 'quality', 'volume', 'cookie']);
   const cookieItem = section.settings.find((item) => item.key === 'cookie');
   assert.equal(cookieItem.type, 'secret');
 
@@ -286,6 +284,11 @@ function installGlobals(window) {
   assert.equal(root.getAttribute('data-open'), '0', '默认不显示');
   assert.match(root.querySelector('style').textContent, /\.mv-root\[data-open="1"\]\{display:block\}/);
 
+  // 歌词 / 弹幕这些「叠在画面上的东西」已经整块拿掉了，控制条上不该再出现
+  assert.equal(root.querySelector('.mv-lyric'), null, '不该再有歌词层');
+  assert.equal(root.querySelector('.mv-dmk'), null, '不该再有弹幕层');
+  assert.equal(root.querySelector('.mv-dmkbar'), null, '不该再有发弹幕栏');
+
   // 4. 点按钮 → 打开 + 调 resolveMv
   btn.click();
   await flush();
@@ -300,16 +303,16 @@ function installGlobals(window) {
   assert.equal(resolveCall.payload.artist, '周杰伦');
   assert.equal(resolveCall.payload.durationMs, 270000, '时长要按毫秒传给打分');
   assert.equal(resolveCall.payload.quality, 'auto');
+  assert.equal(
+    calls.rpc.filter((call) => /^(mvDanmaku|mvSendDanmaku)$/.test(call.name)).length,
+    0,
+    '不该再调弹幕接口',
+  );
 
   // 5. 取到流之后：video + 伴音都挂上，且开播
   const video = root.querySelector('video');
   assert.ok(video.src.includes('/s/vtoken'), `video.src 应该是代理地址，实际 ${video.src}`);
   assert.equal(video.muted, true, 'DASH 模式下画面静音，声音走伴音轨');
-
-  const audio = [...window.document.querySelectorAll('audio')].find((el) =>
-    String(el.src).includes('/s/atoken'),
-  );
-  assert.ok(audio || true, '伴音轨是脱离 DOM 创建的，取不到也不影响断言');
 
   assert.ok(media.plays >= 1, '应该尝试播放');
   assert.equal(root.querySelector('.mv-title').textContent, '晴天');
@@ -328,7 +331,7 @@ function installGlobals(window) {
   assert.equal(calls.play, 1, '退出后要把音乐接着放下去');
   assert.ok(!String(video.src).includes('/s/vtoken'), '退出要卸掉视频源，别留着后台流量');
 
-  // 7. 换歌：MV 跟着换（队列连播 / 播放列表都走这条路），不是关掉
+  // 7. 换歌：MV 跟着换，不是关掉
   btn.click();
   await flush();
   assert.equal(root.getAttribute('data-open'), '1');
@@ -342,31 +345,7 @@ function installGlobals(window) {
   assert.equal(afterSwitch.length, beforeSwitch + 1, '换歌要重新找下一首的 MV');
   assert.equal(afterSwitch.at(-1).payload.title, '七里香');
 
-  // 8. 歌词：一行、「作词」这种标注行不显示
-  let clock = 0;
-  Object.defineProperty(video, 'currentTime', {
-    configurable: true,
-    get: () => clock,
-    set: (value) => {
-      clock = value;
-    },
-  });
-  clock = 3;
-  video.dispatchEvent(new window.Event('timeupdate'));
-  const lyric = root.querySelector('.mv-lyric');
-  assert.equal(lyric.getAttribute('data-empty'), '0', '播到有歌词的地方要显示出来');
-  assert.equal(lyric.querySelector('.mv-lyric-main').textContent, '故事的小黄花');
-  assert.equal(lyric.querySelector('.mv-lyric-sub').textContent, 'The little yellow flower');
-
-  clock = 0.5;
-  video.dispatchEvent(new window.Event('timeupdate'));
-  assert.equal(
-    lyric.getAttribute('data-empty'),
-    '1',
-    '第 0.5 秒只剩「作词：…」那种行，过滤掉之后不该有字',
-  );
-
-  // 9. 播放列表：点按钮打开，列出队列、缩略图来自 mvPreview，点一行会切歌
+  // 8. 播放列表：点按钮打开，列出队列、缩略图来自 mvPreview
   root.querySelector('.mv-btn[title^="播放列表"]').click();
   await flush(4);
   const panel = root.querySelector('.mv-queue');
@@ -383,9 +362,46 @@ function installGlobals(window) {
     `MV 封面回来之后要换上去，实际 ${JSON.stringify(thumbs)}`,
   );
 
+  // 点第三行：就地放这一行的 MV。
+  // 关键：**不许碰宿主** —— 宿主一换歌就会打开它自己的播放页，把 MV 页顶掉。
+  const resolveBeforeRow = calls.rpc.filter((call) => call.name === 'resolveMv').length;
   rows[2].click();
+  await flush(4);
+  assert.equal(calls.queue, 0, '点一行时不要动宿主队列（否则会跳到歌曲播放页）');
+  const rowResolve = calls.rpc.filter((call) => call.name === 'resolveMv');
+  assert.equal(rowResolve.length, resolveBeforeRow + 1, '点一行只搜一次');
+  assert.equal(rowResolve.at(-1).payload.bvid, 'BV1aa411c7mE', '要直接用这行的 bvid 取流');
+  assert.equal(rowResolve.at(-1).payload.title, '稻香', '歌名要跟着换成这一行的');
+  assert.equal(root.getAttribute('data-shown'), '1', 'MV 页要一直在，不能被顶掉');
+  const afterRows = [...panel.querySelectorAll('.mv-qrow')];
+  assert.equal(afterRows.length, 3, '整个队列都列出来，能往回点');
+  assert.equal(afterRows[0].getAttribute('data-current'), '0', '当前不再是最上面那行');
+  assert.equal(afterRows[2].getAttribute('data-current'), '1', '高亮要跟着点到的那一行走');
+  assert.equal(afterRows[2].querySelector('.mv-qtitle').textContent, '稻香');
+
+  // 宿主自己换了歌（媒体键等）时，MV 照样跟着换
+  for (const handler of listeners.get('playback.songChanged') || []) {
+    handler({ song: { ...SONG, title: '稻香' } });
+  }
   await flush(3);
-  assert.equal(calls.queue, 1, '点一行要交给宿主切到那首');
+  assert.equal(
+    calls.rpc.filter((call) => call.name === 'resolveMv').length,
+    resolveBeforeRow + 1,
+    '同一首歌的 songChanged 不该再搜一遍',
+  );
+
+  // 9. 退出时才把宿主挪到刚看的那首（第一次 Esc 先收列表，第二次才退出）
+  const esc2 = new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
+  window.document.dispatchEvent(esc2);
+  await flush(2);
+  assert.equal(panel.getAttribute('data-open'), '0', 'Esc 先收播放列表');
+  assert.equal(root.getAttribute('data-shown'), '1', '列表收起来时 MV 还在');
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await flush(4);
+  assert.equal(root.getAttribute('data-shown'), '0');
+  assert.equal(calls.queue, 1, '退出影院才让宿主的队列跟过去');
+  assert.equal(calls.queueIndex, 2, '跟到点的那一行');
+  assert.equal(calls.play, 2, '退出后音乐从那首接着放');
 
   // 10. 卸载干净
   if (typeof mountReturns === 'function') mountReturns();
@@ -394,7 +410,7 @@ function installGlobals(window) {
   if (typeof dispose === 'function') dispose();
   assert.equal(bar.querySelector('button'), null, '卸载后按钮要摘掉');
 
-  console.log('✓ 主路径：按钮 → 搜索 → 全屏播放 → 歌词 → 播放列表 → 退出恢复音乐');
+  console.log('✓ 主路径：按钮 → 搜索 → 全屏播放 → 播放列表点播 → 退出恢复音乐');
 }
 
 /* ------------------------------------------------------------------ *
@@ -456,7 +472,7 @@ function installGlobals(window) {
   const keys = calls.registered.settings[0].settings.map((item) => item.key);
   assert.deepEqual(
     keys,
-    ['quality', 'pauseMusic', 'showLyrics', 'autoNext', 'volume'],
+    ['pauseMusic', 'autoNext', 'quality', 'volume'],
     '1.6 上不出现 secret 字段',
   );
   assert.ok(calls.registered.commands.length >= 2);

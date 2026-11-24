@@ -271,7 +271,21 @@ function parseDuration(value) {
 }
 
 const NOISE =
-  /(翻唱|翻自|cover|伴奏|karaoke|纯音乐|钢琴|吉他|演奏|弹奏|教学|曲谱|鼓谱|乐谱|谱子|\btab\b|reaction|解说|直播|录播|合集|混剪|remix|鬼畜|搞笑|恶搞|8d|环绕|日推)/i;
+  /(翻唱|翻自|cover|伴奏|karaoke|纯音乐|钢琴|piano|吉他|演奏|弹奏|教学|曲谱|鼓谱|乐谱|谱子|\btab\b|reaction|解说|直播|录播|合集|混剪|remix|鬼畜|搞笑|恶搞|整活|8d|环绕|日推)/i;
+
+/**
+ * 「官方号」的两种长相：
+ *   · 名字里明写官方 / 工作室 / 唱片 —— UP 主自己起的，好伪造，只当弱信号；
+ *   · 认证位（下面 getCard 查得到，type=1 是机构认证）—— 伪造不了，这才是主信号。
+ */
+const OFFICIAL_CHANNEL = /(官方|官频|official|工作室|studio|唱片|records|厂牌|音乐台|音乐频道|music\s*(?:channel|label))/i;
+
+/** 已知的唱片公司 / 版权方账号名。命中了直接算官方候选，连认证都不用查。 */
+const LABEL_CHANNEL =
+  /(环球音乐|索尼音乐|华纳音乐|滚石|杰威尔|相信音乐|太合音乐|摩登天空|华研国际|福茂|avex|sony\s*music|universal\s*music|warner\s*music|columbia\s*records|republic\s*records|interscope)/i;
+
+/** 现场向：能看，但不是 MV（全屏看一场 live 和看一支 MV 的期待不一样）。 */
+const LIVE_VIDEO = /(\blive\b|现场|演唱会|concert|巡演|音乐节|festival|不插电|unplugged)/i;
 
 /**
  * 「这就是 MV」的强信号。全屏看片和角落小窗是两回事：
@@ -284,13 +298,15 @@ const MV_STRONG = /(\bmv\b|music\s*video|官方|official|正式版|中字|中文
 const QUALITY_TAG = /(1080|\b4k\b|\bhd\b|高清|修复)/i;
 
 /** 明显是「音频向」的投稿：画面基本静止，全屏看没意义。 */
-const AUDIO_ONLY = /(hi-?res|无损|音质|纯享|歌词|lyrics?|可视化|频谱|audio\s*only|试听)/i;
+const AUDIO_ONLY =
+  /(hi-?res|无损|音质|纯享|歌词|lyrics?|可视化|频谱|audio\s*only|试听|黑胶|动态歌词|歌单|琴谱|光遇|\bdj\b|慢摇|remix|mix)/i;
 
 /**
  * 打分。拆成歌名 / 歌手 / 其它三块。
  *
  * 「歌手」那一块看的是 **UP 主名字**，不是视频标题 —— 标题里堆歌手名太容易，
- * 官方号 / 本人号的 UP 主名才是强信号。
+ * 官方号 / 本人号的 UP 主名才是强信号。UP 主认证（机构认证 / 歌手本人号）要
+ * 额外请求一次 card 接口，那一步在 applyVerify 里做，这里只留位置。
  */
 function scoreCandidate(item, want) {
   const title = stripTags(item.title);
@@ -301,6 +317,7 @@ function scoreCandidate(item, want) {
   const artist = normalize(want.artist);
   const uploader = normalize(item.author);
   const seconds = parseDuration(item.duration);
+  const typename = String(item.typename || '');
 
   let nameScore = 0;
   let artistScore = 0;
@@ -333,15 +350,39 @@ function scoreCandidate(item, want) {
   if (uploaderHit) artistScore += 34;
   else if (titleArtistHit) artistScore += 18;
 
+  /* --- 官方/本人号：第一层是名字，第二层（认证）在 applyVerify 里补 --- */
+  const officialName = OFFICIAL_CHANNEL.test(uploaderRaw);
+  const labelName = LABEL_CHANNEL.test(uploaderRaw);
+  const selfName = Boolean(artist) && Boolean(uploader) && uploader === artist;
+
+  if (selfName) artistScore += 24; // UP 主名字就是歌手名：本人号 / 官方搬运
+  if (officialName) otherScore += 12;
+  if (labelName) otherScore += 18;
+  if ((officialName || labelName) && uploaderHit && !selfName) artistScore += 8;
+
+  /* --- 分区：193「MV」是投稿人自己选的分类，比标题里的 MV 可信 --- */
+  if (typename === 'MV') otherScore += 30;
+  else if (/音乐现场/.test(typename)) otherScore += 2;
+  else if (/音乐/.test(typename)) otherScore += 4;
+  else if (typename) otherScore -= 34; // 舞蹈 / 手机游戏 / 鬼畜，全屏看基本都是错的
+
   if (seconds >= 45 && seconds <= 900) otherScore += 12;
   if (seconds > 1800 || (seconds > 0 && seconds < 25)) otherScore -= 30;
 
   const plays = Number(item.play) || 0;
   otherScore += Math.min(30, Math.log10(plays + 1) * 6);
 
+  // 点赞数比播放数难刷，给一点权重（最多 12 分）
+  const likes = Number(item.like) || 0;
+  if (likes > 0) otherScore += Math.min(12, Math.log10(likes + 1) * 3);
+
+  const tags = normalize(item.tag);
+  if (artist && tags && tags.includes(artist)) otherScore += 6;
+
   if (MV_STRONG.test(title)) otherScore += 26;
   if (QUALITY_TAG.test(title)) otherScore += 8;
   if (AUDIO_ONLY.test(title)) otherScore -= 20;
+  if (LIVE_VIDEO.test(title)) otherScore -= 6;
   if (NOISE.test(title)) otherScore -= 55;
 
   if (want.durationMs > 0 && seconds > 0) {
@@ -359,6 +400,8 @@ function scoreCandidate(item, want) {
     nameHit,
     artistHit,
     artistSource: uploaderHit ? 'uploader' : titleArtistHit ? 'title' : null,
+    official: 0,
+    verify: '',
   };
 }
 
@@ -367,6 +410,128 @@ function rankCandidates(items, want) {
     .map((item) => ({ item, score: scoreCandidate(item, want) }))
     .filter((entry) => entry.score !== null)
     .sort((a, b) => b.score.total - a.score.total);
+}
+
+/* ------------------------------------------------------------------ *
+ * UP 主认证（「官方 MV 频道 / 歌手本人号」的硬信号）
+ *
+ * 搜索结果里没有认证信息，得单独问 card 接口。一次 resolve 只查前几个候选，
+ * 按 mid 缓存 6 小时 —— 常搜的那几个搬运号会立刻命中缓存，不再发请求。
+ * ------------------------------------------------------------------ */
+
+const cardCache = new Map();
+const CARD_OK_TTL = 6 * 60 * 60 * 1000;
+const CARD_FAIL_TTL = 60 * 60 * 1000;
+
+function cardFrom(json) {
+  const card = json && json.code === 0 && json.data && json.data.card;
+  if (!card) return null;
+  const official = card.Official && typeof card.Official === 'object' ? card.Official : null;
+  return {
+    name: String(card.name || ''),
+    follower: Number(json.data.follower) || 0,
+    official: official
+      ? {
+          // type: -1 无 / 0 个人认证 / 1 机构认证
+          type: Number.isFinite(Number(official.type)) ? Number(official.type) : -1,
+          title: String(official.title || ''),
+          role: Number(official.role) || 0,
+        }
+      : null,
+  };
+}
+
+async function getCard(mid) {
+  const key = String(mid || '').trim();
+  if (!key) return null;
+
+  const now = Date.now();
+  const hit = cardCache.get(key);
+  if (hit && now - hit.at < (hit.data ? CARD_OK_TTL : CARD_FAIL_TTL)) return hit.data;
+
+  let data = null;
+  try {
+    const current = await getSession();
+    const json = await getJson(
+      `https://api.bilibili.com/x/web-interface/card?mid=${encodeURIComponent(key)}`,
+      { Cookie: current.cookie, Referer: REFERER },
+      6000,
+    );
+    data = cardFrom(json);
+  } catch {
+    data = null;
+  }
+
+  cardCache.set(key, { at: now, data });
+  return data;
+}
+
+/**
+ * 认证带来的加分。level 只用来给界面挂「官方」角标：
+ *   2 = 真的官方（机构认证，或认证名里带歌手名，或歌手本人号）
+ *   1 = 有认证（个人认证）
+ */
+function verifyBonus(card, want, item) {
+  const official = card && card.official;
+  const type = official ? official.type : -1;
+  const verifyTitle = normalize(official ? official.title : '');
+  const artist = normalize(want.artist);
+  const uploader = normalize(item.author);
+
+  let bonus = 0;
+  let level = 0;
+
+  if (type === 1) {
+    bonus += 22; // 机构认证：唱片公司 / 官方频道
+    level = 2;
+  } else if (type === 0) {
+    bonus += 6; // 个人认证
+    level = 1;
+  }
+
+  if (type >= 0 && artist && verifyTitle && verifyTitle.includes(artist)) {
+    bonus += 12; // 认证名里写着这个歌手 = 官方账号
+    level = 2;
+  }
+
+  if (type === 0 && artist && uploader && uploader === artist) {
+    bonus += 16; // 歌手本人的个人认证号
+    level = 2;
+  }
+
+  if (card && card.follower >= 500000) bonus += 4;
+
+  return { bonus, level, title: (official && official.title) || '' };
+}
+
+/** 查前 limit 个候选的认证，改分后再排一次。失败就当没认证，绝不阻断。 */
+async function applyVerify(ranked, want, limit = 4) {
+  if (!ranked.length) return ranked;
+
+  const picks = [];
+  const seen = new Set();
+  for (const entry of ranked) {
+    const mid = entry.item.mid;
+    if (!mid || seen.has(String(mid))) continue;
+    seen.add(String(mid));
+    picks.push(entry);
+    if (picks.length >= limit) break;
+  }
+  if (!picks.length) return ranked;
+
+  const cards = await Promise.all(picks.map((entry) => getCard(entry.item.mid).catch(() => null)));
+
+  picks.forEach((entry, index) => {
+    const card = cards[index];
+    if (!card) return;
+    const result = verifyBonus(card, want, entry.item);
+    entry.score.total += result.bonus;
+    entry.score.official = Math.max(entry.score.official || 0, result.level);
+    if (!entry.score.verify && result.level >= 2) entry.score.verify = result.title;
+  });
+
+  ranked.sort((a, b) => b.score.total - a.score.total);
+  return ranked;
 }
 
 function absoluteCover(url) {
@@ -387,13 +552,31 @@ function toCandidateDto(entry) {
     durationSec: parseDuration(entry.item.duration),
     play: Number(entry.item.play) || 0,
     score: Math.round(entry.score.total),
+    typename: entry.item.typename || '',
+    official: entry.score.official || 0,
+    verify: entry.score.verify || '',
     nameHit: entry.score.nameHit,
     artistHit: entry.score.artistHit,
     artistSource: entry.score.artistSource,
   };
 }
 
+/**
+ * 同一个关键词的搜索结果缓存 8 分钟。
+ *
+ * 不只是省时间：补搜「歌名 歌手 MV」会让请求量翻倍，B 站对短时间内的重复搜索
+ * 会**返回空列表**（不是报错，是 code 0 + 空），表现就是「搜不到这首歌」。
+ */
+const searchCache = new Map();
+const SEARCH_TTL = 8 * 60 * 1000;
+const SEARCH_MAX = 120;
+
 async function searchVideos(keyword, retried = false) {
+  const cacheKey = String(keyword || '').trim();
+  const now = Date.now();
+  const cached = searchCache.get(cacheKey);
+  if (cached && now - cached.at < SEARCH_TTL) return cached.items;
+
   const current = await getSession();
   const params = {
     search_type: 'video',
@@ -424,16 +607,24 @@ async function searchVideos(keyword, retried = false) {
   }
 
   const list = json.data && Array.isArray(json.data.result) ? json.data.result : [];
-  return list
+  const items = list
     .filter((entry) => entry && entry.type === 'video' && entry.bvid)
     .map((entry) => ({
       bvid: String(entry.bvid),
       title: stripTags(entry.title),
       author: String(entry.author || ''),
+      mid: String(entry.mid || ''),
+      typename: String(entry.typename || ''),
+      tag: String(entry.tag || ''),
       pic: String(entry.pic || ''),
       duration: entry.duration,
       play: entry.play,
+      like: entry.like,
     }));
+
+  searchCache.set(cacheKey, { at: now, items });
+  if (searchCache.size > SEARCH_MAX) searchCache.delete(searchCache.keys().next().value);
+  return items;
 }
 
 /* ------------------------------------------------------------------ *
@@ -929,25 +1120,49 @@ async function resolveMv(input) {
     }
     best = { bvid: bvidAsked, title: '', author: '', pic: '', duration: '0:00', play: 0 };
   } else {
+    const pool = new Map();
+    const absorb = (list) => {
+      for (const item of list || []) if (item && item.bvid && !pool.has(item.bvid)) pool.set(item.bvid, item);
+    };
+
     let items;
     try {
       items = await searchVideos(keyword);
     } catch (err) {
       return { ok: false, error: String((err && err.message) || err), keyword };
     }
+    absorb(items);
 
     if (!items.length && want.artist && !input.query) {
       // 歌名 + 歌手一起搜不到时，退一步只搜歌名。
       try {
-        items = await searchVideos(want.title);
+        absorb(await searchVideos(want.title));
       } catch {
-        items = [];
+        /* 还是没有就算了 */
       }
     }
-    if (!items.length) return { ok: false, error: 'search-empty', keyword };
 
-    ranked = rankCandidates(items, want);
-    if (!ranked.length) return { ok: false, error: 'no-candidate', keyword };
+    ranked = rankCandidates([...pool.values()], want);
+
+    /**
+     * 常识：B 站上「歌名 歌手」搜出来的头部经常是音频投稿（4K Hi-Res / 无损），
+     * 而「歌名 歌手 MV」能捞到另一批真投稿 —— 两批结果重合度并不高。
+     * 所以只在头部不够像 MV 时才补搜一次（多花一次请求、约 400ms，不是每次都花）。
+     */
+    const weak = !ranked.length || ranked[0].item.typename !== 'MV' || ranked[0].score.total < 150;
+    if (weak && !input.query) {
+      try {
+        absorb(await searchVideos(`${keyword} MV`));
+      } catch {
+        /* 补搜失败就用手上这批 */
+      }
+      ranked = rankCandidates([...pool.values()], want);
+    }
+
+    if (!ranked.length) return { ok: false, error: pool.size ? 'no-candidate' : 'search-empty', keyword };
+
+    // 认证是「官方」的硬信号，排在标题和播放量后面查一遍，把官方号顶上去。
+    await applyVerify(ranked, want);
 
     best = ranked[0].item;
   }
@@ -996,6 +1211,9 @@ async function resolveMv(input) {
     cover: absoluteCover(best.pic || meta.cover),
     durationSec: meta.durationSec || parseDuration(best.duration),
     score: ranked.length ? Math.round(ranked[0].score.total) : null,
+    typename: best.typename || '',
+    official: ranked.length ? ranked[0].score.official || 0 : 0,
+    verify: ranked.length ? ranked[0].score.verify || '' : '',
     keyword,
     mode: stream.mode,
     quality: stream.quality,
@@ -1029,11 +1247,84 @@ async function searchCandidates(input) {
   const ranked = rankCandidates(items, want);
   if (!ranked.length) return { ok: false, error: 'no-candidate', keyword: query };
 
+  await applyVerify(ranked, want);
+
   return {
     ok: true,
     keyword: query,
     candidates: ranked.slice(0, 8).map(toCandidateDto),
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * 播放列表缩略图
+ *
+ * 队列里十几首歌，全都取流既慢又浪费 —— 这里只做「搜一下、拿封面」，
+ * 给右侧列表画缩略图用。并发 3，一次最多 8 首。
+ * ------------------------------------------------------------------ */
+
+async function previewOne(item) {
+  const key = String(item.key || '');
+  const want = {
+    title: String(item.title || '').trim(),
+    artist: String(item.artist || '').trim(),
+    durationMs: 0,
+    ignoreCase: true,
+  };
+  if (!want.title) return { key, ok: false, error: 'no-title' };
+
+  const keyword = [want.title, want.artist].filter(Boolean).join(' ');
+  let items;
+  try {
+    items = await searchVideos(keyword);
+    // B 站对短时间内的重复搜索会回空列表：等一会儿再问一次，缩略图别留个灰块。
+    if (!items.length) {
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      items = await searchVideos(`${keyword} MV`);
+    }
+  } catch (err) {
+    return { key, ok: false, error: String((err && err.message) || err) };
+  }
+  if (!items.length) return { key, ok: false, error: 'search-empty' };
+
+  const ranked = rankCandidates(items, want);
+  if (!ranked.length) return { key, ok: false, error: 'no-candidate' };
+
+  const top = ranked[0];
+  return {
+    key,
+    ok: true,
+    bvid: top.item.bvid,
+    cover: absoluteCover(top.item.pic),
+    author: top.item.author,
+    title: top.item.title,
+    typename: top.item.typename || '',
+    score: Math.round(top.score.total),
+  };
+}
+
+async function mvPreview(input) {
+  const list = Array.isArray(input && input.items) ? input.items.slice(0, 8) : [];
+  if (!list.length) return { ok: true, results: [] };
+
+  const results = new Array(list.length);
+  let cursor = 0;
+
+  const worker = async () => {
+    while (cursor < list.length) {
+      const index = cursor;
+      cursor += 1;
+      const entry = list[index];
+      results[index] = await previewOne(entry || {}).catch((err) => ({
+        key: String((entry && entry.key) || ''),
+        ok: false,
+        error: String((err && err.message) || err),
+      }));
+    }
+  };
+
+  await Promise.all([worker(), worker(), worker()]);
+  return { ok: true, results };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1059,6 +1350,15 @@ module.exports = function activate(runtime) {
       return await searchCandidates(input || {});
     } catch (err) {
       return { ok: false, error: String((err && err.message) || err) };
+    }
+  });
+
+  // 播放列表缩略图：只搜索不取流，快得多。
+  runtime.rpc.handle('mvPreview', async (input) => {
+    try {
+      return await mvPreview(input || {});
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err), results: [] };
     }
   });
 

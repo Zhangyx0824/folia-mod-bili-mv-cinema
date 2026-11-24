@@ -27,7 +27,27 @@ fs.mkdirSync(buildDir, { recursive: true });
 const FFMPEG = '/Users/pomepii/bin/ffmpeg';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
-const SONG = { title: 'Shape of You', artists: [{ name: 'Ed Sheeran' }], duration: 234 };
+const SONG = { title: 'Photograph', artists: [{ name: 'Ed Sheeran' }], duration: 258 };
+
+/** 右侧播放列表里要出现的那几首（同一位歌手，看得出是一张歌单）。 */
+const QUEUE_SONGS = [
+  ['Photograph', 'Ed Sheeran', 258],
+  ['Shape of You', 'Ed Sheeran', 234],
+  ['Perfect', 'Ed Sheeran', 263],
+  ['Thinking Out Loud', 'Ed Sheeran', 281],
+  ['Bad Habits', 'Ed Sheeran', 231],
+  ['Shivers', 'Ed Sheeran', 207],
+  ['Castle on the Hill', 'Ed Sheeran', 261],
+  ['Eyes Closed', 'Ed Sheeran', 194],
+].map(([title, artist, duration]) => ({ title, artist, duration }));
+
+const songKeyOf = (title, artist) => `${title}\u241F${artist}`.toLowerCase();
+
+/** 预览里的歌词：一句主歌词 + 一句翻译，用真 ed sheeran 的歌词。 */
+const PREVIEW_LYRIC = {
+  main: 'We keep this love in a photograph',
+  sub: '我们把爱留在照片里',
+};
 
 /* ------------------------------------------------------------------ *
  * 1. 真去 B 站要一个 MV，并截一帧
@@ -56,9 +76,96 @@ if (!info.ok) {
 }
 console.log('取到：', info.title, '|', info.mode, info.quality.label);
 
+// 播放列表里那几首的 MV 封面（只搜索、不取流）
+const previews = await handlers
+  .mvPreview({
+    items: QUEUE_SONGS.map((song) => ({
+      key: songKeyOf(song.title, song.artist),
+      title: song.title,
+      artist: song.artist,
+      durationMs: song.duration * 1000,
+    })),
+  })
+  .then((result) => (result && result.results) || [])
+  .catch(() => []);
+
+console.log(`播放列表封面拿到 ${previews.filter((item) => item && item.ok).length}/${QUEUE_SONGS.length} 张`);
+
 const framePath = path.join(buildDir, 'frame.jpg');
 const clipPath = path.join(buildDir, 'loop.mp4');
 const headers = 'Referer: https://www.bilibili.com/\r\nUser-Agent: Mozilla/5.0\r\n';
+
+/**
+ * 挑一帧「没有烧进字幕、而且画面本身不难看」的画面。
+ *
+ * 这支 MV 自带官方中字，而预览图里同时出现「画面里的字幕 + 模组叠的歌词」会看着像 bug。
+ * 做法：几个时间点各取一帧，一次 ffmpeg 里同时量
+ *   · 画面底部 16% 的最亮值（有白色字幕就会很亮）；
+ *   · 整帧平均亮度（太黑的一片糊也不好当封面）。
+ * 挑「底部不亮 + 整体亮度接近中间」的那一帧。
+ */
+async function probeFrame(url, seconds) {
+  try {
+    const { stdout } = await execFile(
+      FFMPEG,
+      [
+        '-hide_banner',
+        '-headers',
+        headers,
+        '-ss',
+        String(seconds),
+        '-i',
+        url,
+        '-frames:v',
+        '1',
+        '-filter_complex',
+        '[0:v]split=2[a][b];[a]signalstats,metadata=print:file=-[a1];' +
+          '[b]crop=iw:ih*0.16:0:ih*0.78,signalstats,metadata=print:file=-[b1]',
+        '-map',
+        '[a1]',
+        '-map',
+        '[b1]',
+        '-f',
+        'null',
+        '-',
+      ],
+      { timeout: 60000 },
+    );
+    const text = String(stdout);
+    const avgs = [...text.matchAll(/signalstats\.YAVG=([\d.]+)/g)].map((m) => Number(m[1]));
+    const maxes = [...text.matchAll(/signalstats\.YMAX=(\d+)/g)].map((m) => Number(m[1]));
+    return {
+      // 第一组是整帧，第二组是底部裁切
+      avg: avgs.length ? avgs[0] : 0,
+      bottomMax: maxes.length > 1 ? maxes[1] : maxes[0] ?? 255,
+    };
+  } catch {
+    return null;
+  }
+}
+
+let pickedSecond = 45;
+{
+  const candidates = [8, 20, 32, 45, 62, 78, 96, 112];
+  const rows = [];
+  for (const second of candidates) {
+    const probe = await probeFrame(info.sources[0].video, second);
+    if (!probe) continue;
+    rows.push({ second, ...probe });
+    console.log(`  ${second}s 底部最亮 ${probe.bottomMax} / 整帧亮度 ${Math.round(probe.avg)}`);
+  }
+
+  const clean = rows.filter((row) => row.bottomMax < 200);
+  const pool = clean.length ? clean : rows;
+  // 亮度以 90 为理想值，越接近越好；底部越暗越好
+  pool.sort((a, b) => {
+    const scoreA = Math.abs(a.avg - 105) * 1.3 + a.bottomMax * 0.5;
+    const scoreB = Math.abs(b.avg - 105) * 1.3 + b.bottomMax * 0.5;
+    return scoreA - scoreB;
+  });
+  if (pool[0]) pickedSecond = pool[0].second;
+  console.log(`截帧时间点：${pickedSecond}s`);
+}
 
 try {
   await execFile(
@@ -68,7 +175,7 @@ try {
       '-headers',
       headers,
       '-ss',
-      '45',
+      String(pickedSecond),
       '-i',
       info.sources[0].video,
       '-frames:v',
@@ -127,6 +234,22 @@ const harness = `<!doctype html>
 <div id="bar"></div>
 <script type="module">
 const RESULT = ${JSON.stringify({ ...info, quality: { ...info.quality, label: '1080P', width: 1920, height: 1080 }, sources: [{ kind: 'proxy', video: '/loop.mp4', audio: '' }], mode: 'muxed' })};
+const PREVIEWS = ${JSON.stringify(previews)};
+const QUEUE_SONGS = ${JSON.stringify(QUEUE_SONGS)};
+const SONG = ${JSON.stringify(SONG)};
+const LYRIC = ${JSON.stringify(PREVIEW_LYRIC)};
+
+const songKeyOf = (title, artist) => \`\${title}\\u241F\${artist}\`.toLowerCase();
+const queueSongs = QUEUE_SONGS.map((song, index) => ({
+  index,
+  song: {
+    title: song.title,
+    artists: [{ name: song.artist }],
+    duration: song.duration,
+    coverUrl: (PREVIEWS[index] && PREVIEWS[index].cover) || '',
+    sourceRef: { kind: 'online', providerId: 'netease', mediaId: String(index + 1) },
+  },
+}));
 
 const listeners = new Map();
 const folium = {
@@ -134,9 +257,18 @@ const folium = {
   host: { folium: { major: 1, minor: 9 } },
   log: { info(){}, warn(){}, error(){}, debug(){} },
   storage: { get: async () => null, set: async () => {} },
+  lyrics: {
+    getLines: () => [
+      { fullText: '作词：Ed Sheeran', startTime: 0, endTime: 6 },
+      { fullText: LYRIC.main, startTime: 6, endTime: 12, translation: LYRIC.sub },
+    ],
+    refresh(){},
+  },
   playback: {
-    getState: () => ({ song: ${JSON.stringify(SONG)}, state: 'paused', position: 0, duration: ${SONG.duration} }),
+    getState: () => ({ song: SONG, state: 'paused', position: 0, duration: ${SONG.duration} }),
     pause(){}, play(){},
+    getQueue: () => ({ items: queueSongs, length: queueSongs.length, currentIndex: 0, kind: 'queue', version: 'v1' }),
+    playQueueItem: async () => true,
   },
   events: {
     on(name, fn) {
@@ -145,11 +277,13 @@ const folium = {
       return () => {};
     },
   },
-  rpc: { call: async () => RESULT },
+  rpc: {
+    call: async (name) => (name === 'mvPreview' ? { ok: true, results: PREVIEWS } : RESULT),
+  },
   secrets: { set: async () => {} },
   ui: { toast(){}, navigate(){}, openPlayerPanel(){}, openHomeTab(){} },
   registries: {
-    settingsSections: { register: (def) => ({ id: def.id, settings: { get: () => ({ quality: 'auto', pauseMusic: false, volume: 90 }) } }) },
+    settingsSections: { register: (def) => ({ id: def.id, settings: { get: () => ({ quality: 'auto', pauseMusic: false, showLyrics: true, autoNext: true, volume: 90 }) } }) },
     progressButtons: { register: (def) => { window.__btn = def; return () => {}; } },
     stageLayers: { register: (def) => { window.__layer = def; return () => {}; } },
     commands: { register: () => () => {} },
@@ -168,6 +302,7 @@ document.getElementById('bar').appendChild(holder);
 window.__btn.mount(holder, { getColors: () => ({ text: '#fff' }) });
 
 holder.querySelector('button').click();
+document.getElementById('bar').style.display = 'none';
 
 // 等播放器把 DOM 建好、媒体元数据到齐，然后把画面换成刚截下来的那一帧。
 // 无头 Chrome 里让 <video> 真的解码出一帧不稳（虚拟时间 + 媒体管线），
@@ -200,11 +335,27 @@ await new Promise((r) => setTimeout(r, 250));
 
 root.querySelector('.mv-controls .mv-btn.round').innerHTML =
   '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="5" width="4" height="14" rx="1.4"/><rect x="13.5" y="5" width="4" height="14" rx="1.4"/></svg>';
+
+// 歌词：把时钟推到第一句中间，再让模组自己算该显示哪句
+// （timeupdate 会顺手刷新进度条，所以时间/填充要在它之后再写）
+Object.defineProperty(video, 'currentTime', {
+  configurable: true,
+  get: () => 8,
+  set: () => {},
+});
+video.dispatchEvent(new Event('timeupdate'));
+
 root.querySelector('.mv-fill').style.width = '37.6%';
 root.querySelector('.mv-knob').style.left = '37.6%';
 const times = root.querySelectorAll('.mv-time');
 times[0].textContent = '1:29';
-times[1].textContent = '3:54';
+times[1].textContent = '4:18';
+
+// 播放列表：点开，等 MV 封面换上去
+const queueBtn = [...root.querySelectorAll('.mv-btn')].find((el) => el.title.startsWith('播放列表'));
+if (queueBtn) queueBtn.click();
+await new Promise((r) => setTimeout(r, 1400));
+
 root.removeAttribute('data-idle');
 document.title = 'ready';
 </script>

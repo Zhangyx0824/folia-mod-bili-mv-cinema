@@ -22,8 +22,27 @@ const SONG = {
   title: '晴天',
   artists: [{ name: '周杰伦' }],
   duration: 270,
+  coverUrl: 'https://p1.music.126.net/qing.jpg',
   sourceRef: { kind: 'online', providerId: 'netease', mediaId: '1' },
 };
+
+const QUEUE = ['晴天', '七里香', '稻香'].map((title, index) => ({
+  index,
+  song: {
+    title,
+    artists: [{ name: '周杰伦' }],
+    duration: 270,
+    coverUrl: `https://p1.music.126.net/${index}.jpg`,
+    sourceRef: { kind: 'online', providerId: 'netease', mediaId: String(index + 1) },
+  },
+}));
+
+/** 歌词：三句，够测「播到哪句」和「元数据行要过滤掉」。 */
+const LYRICS = [
+  { fullText: '作词：周杰伦', startTime: 0, endTime: 4 },
+  { fullText: '故事的小黄花', startTime: 2, endTime: 7, translation: 'The little yellow flower' },
+  { fullText: '从出生那年就飘着', startTime: 7.5, endTime: 13 },
+];
 
 const OK_RESULT = {
   ok: true,
@@ -89,12 +108,13 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
     rpc: [],
     pause: 0,
     play: 0,
+    queue: 0,
     toasts: [],
     registered: { settings: [], buttons: [], layers: [], commands: [] },
   };
 
   const listeners = new Map();
-  const settingsValues = { quality: 'auto', pauseMusic: true, volume: 90 };
+  const settingsValues = { quality: 'auto', pauseMusic: true, showLyrics: true, autoNext: true, volume: 90 };
 
   const folium = {
     env: { context: 'main' },
@@ -104,6 +124,10 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
       get: async () => null,
       set: async () => {},
     },
+    lyrics: {
+      getLines: () => LYRICS,
+      refresh: () => {},
+    },
     playback: {
       getState: () => ({ song, state: 'playing', position: 12, duration: 270 }),
       pause: () => {
@@ -111,6 +135,17 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
       },
       play: () => {
         calls.play += 1;
+      },
+      getQueue: () => ({
+        items: QUEUE,
+        length: QUEUE.length,
+        currentIndex: 0,
+        kind: 'queue',
+        version: 'v1',
+      }),
+      playQueueItem: async (index) => {
+        calls.queue += 1;
+        return index >= 0 && index < QUEUE.length;
       },
     },
     events: {
@@ -129,6 +164,19 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
         calls.rpc.push({ name, payload });
         if (name === 'resolveMv') return resolveResult;
         if (name === 'biliStatus') return { ok: true, loggedIn: true, uname: 'tester', vip: false };
+        if (name === 'mvPreview') {
+          return {
+            ok: true,
+            results: (payload.items || []).map((item) => ({
+              key: item.key,
+              ok: true,
+              bvid: 'BV1aa411c7mE',
+              cover: 'https://i0.hdslb.com/bfs/archive/queue.jpg',
+              author: item.artist,
+              official: 2,
+            })),
+          };
+        }
         return { ok: false, error: 'unexpected-rpc' };
       },
     },
@@ -204,11 +252,11 @@ function installGlobals(window) {
   const { default: activate } = await import(pathToFileURL(clientPath).href);
   const dispose = activate(folium);
 
-  // 1. 设置项：画质 / 暂停 / 音量 / cookie（secret 只在 1.7+ 出现）
+  // 1. 设置项：画质 / 暂停 / 歌词 / 连播 / 音量 / cookie（secret 只在 1.7+ 出现）
   const section = calls.registered.settings[0];
   assert.ok(section, '必须注册设置分区');
   const keys = section.settings.map((item) => item.key);
-  assert.deepEqual(keys, ['quality', 'pauseMusic', 'volume', 'cookie']);
+  assert.deepEqual(keys, ['quality', 'pauseMusic', 'showLyrics', 'autoNext', 'volume', 'cookie']);
   const cookieItem = section.settings.find((item) => item.key === 'cookie');
   assert.equal(cookieItem.type, 'secret');
 
@@ -280,24 +328,73 @@ function installGlobals(window) {
   assert.equal(calls.play, 1, '退出后要把音乐接着放下去');
   assert.ok(!String(video.src).includes('/s/vtoken'), '退出要卸掉视频源，别留着后台流量');
 
-  // 7. 换歌自动收场
+  // 7. 换歌：MV 跟着换（队列连播 / 播放列表都走这条路），不是关掉
   btn.click();
   await flush();
   assert.equal(root.getAttribute('data-open'), '1');
+  const beforeSwitch = calls.rpc.filter((call) => call.name === 'resolveMv').length;
   for (const handler of listeners.get('playback.songChanged') || []) {
     handler({ song: { ...SONG, title: '七里香' } });
   }
-  await flush(3);
-  assert.equal(root.getAttribute('data-shown'), '0', '换歌要自动关掉上一首的 MV');
+  await flush(4);
+  assert.equal(root.getAttribute('data-shown'), '1', '换歌之后 MV 页要留着，跟着换片');
+  const afterSwitch = calls.rpc.filter((call) => call.name === 'resolveMv');
+  assert.equal(afterSwitch.length, beforeSwitch + 1, '换歌要重新找下一首的 MV');
+  assert.equal(afterSwitch.at(-1).payload.title, '七里香');
 
-  // 8. 卸载干净
+  // 8. 歌词：一行、「作词」这种标注行不显示
+  let clock = 0;
+  Object.defineProperty(video, 'currentTime', {
+    configurable: true,
+    get: () => clock,
+    set: (value) => {
+      clock = value;
+    },
+  });
+  clock = 3;
+  video.dispatchEvent(new window.Event('timeupdate'));
+  const lyric = root.querySelector('.mv-lyric');
+  assert.equal(lyric.getAttribute('data-empty'), '0', '播到有歌词的地方要显示出来');
+  assert.equal(lyric.querySelector('.mv-lyric-main').textContent, '故事的小黄花');
+  assert.equal(lyric.querySelector('.mv-lyric-sub').textContent, 'The little yellow flower');
+
+  clock = 0.5;
+  video.dispatchEvent(new window.Event('timeupdate'));
+  assert.equal(
+    lyric.getAttribute('data-empty'),
+    '1',
+    '第 0.5 秒只剩「作词：…」那种行，过滤掉之后不该有字',
+  );
+
+  // 9. 播放列表：点按钮打开，列出队列、缩略图来自 mvPreview，点一行会切歌
+  root.querySelector('.mv-btn[title^="播放列表"]').click();
+  await flush(4);
+  const panel = root.querySelector('.mv-queue');
+  assert.equal(panel.getAttribute('data-open'), '1', '播放列表要能拉开');
+  const rows = [...panel.querySelectorAll('.mv-qrow')];
+  assert.equal(rows.length, 3, '队列里有三首就要列三行');
+  assert.equal(rows[0].getAttribute('data-current'), '1', '当前这首要标出来');
+  const previewCall = calls.rpc.find((call) => call.name === 'mvPreview');
+  assert.ok(previewCall, '要给看得见的行去要 MV 封面');
+  assert.equal(previewCall.payload.items.length, 2, '当前这首不用查，其余两首一批问');
+  const thumbs = rows.map((row) => row.querySelector('img').getAttribute('src'));
+  assert.ok(
+    thumbs.some((src) => String(src).includes('hdslb.com')),
+    `MV 封面回来之后要换上去，实际 ${JSON.stringify(thumbs)}`,
+  );
+
+  rows[2].click();
+  await flush(3);
+  assert.equal(calls.queue, 1, '点一行要交给宿主切到那首');
+
+  // 10. 卸载干净
   if (typeof mountReturns === 'function') mountReturns();
   if (typeof layerDispose === 'function') layerDispose();
   else if (layerDispose && layerDispose.unregister) layerDispose.unregister();
   if (typeof dispose === 'function') dispose();
   assert.equal(bar.querySelector('button'), null, '卸载后按钮要摘掉');
 
-  console.log('✓ 主路径：按钮 → 搜索 → 全屏播放 → 退出恢复音乐');
+  console.log('✓ 主路径：按钮 → 搜索 → 全屏播放 → 歌词 → 播放列表 → 退出恢复音乐');
 }
 
 /* ------------------------------------------------------------------ *
@@ -357,7 +454,11 @@ function installGlobals(window) {
   const dispose = activate(folium);
 
   const keys = calls.registered.settings[0].settings.map((item) => item.key);
-  assert.deepEqual(keys, ['quality', 'pauseMusic', 'volume'], '1.6 上不出现 secret 字段');
+  assert.deepEqual(
+    keys,
+    ['quality', 'pauseMusic', 'showLyrics', 'autoNext', 'volume'],
+    '1.6 上不出现 secret 字段',
+  );
   assert.ok(calls.registered.commands.length >= 2);
   if (typeof dispose === 'function') dispose();
 

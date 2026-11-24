@@ -45,6 +45,8 @@ const ICON_LINK = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" s
 
 const ICON_REPLAY = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10a8 8 0 111.8 7.4"/><path d="M4 5v5h5"/></svg>`;
 
+const ICON_LIST = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11M4 12h11M4 17h7"/><path d="M18.5 8.6v7.2c0 .5.6.8 1 .5l2.4-3.6a.6.6 0 000-.6l-2.4-3.6c-.4-.3-1 0-1 .5z" fill="currentColor" stroke="none"/></svg>`;
+
 /* ------------------------------------------------------------------ *
  * 样式（全部作用在自己这棵树上，shadow root 里也不会串出去）
  * ------------------------------------------------------------------ */
@@ -81,6 +83,7 @@ const CSS = `
 .mv-btn:hover{background:rgba(255,255,255,.19);border-color:rgba(255,255,255,.24)}
 .mv-btn:active{transform:scale(.95)}
 .mv-btn[disabled]{opacity:.4;cursor:default}
+.mv-btn[data-active="1"]{background:rgba(251,114,153,.2);border-color:rgba(251,114,153,.42);color:#ffc2d4}
 .mv-btn.round{width:36px;height:36px;border-radius:50%;flex:none}
 .mv-btn.ghost{background:rgba(0,0,0,.34);border-color:rgba(255,255,255,.14)}
 .mv-btn.tall{padding:0 11px;height:30px;border-radius:8px}
@@ -152,6 +155,60 @@ const CSS = `
   backdrop-filter:blur(14px);transition:background .18s,transform .18s}
 .mv-bigplay:hover{background:rgba(255,255,255,.24);transform:scale(1.04)}
 .mv-bigplay svg{width:30px;height:30px;margin-left:3px}
+
+/* 歌词：一行，压在控制条上方。只在有歌词且没被关掉时才占位。 */
+.mv-lyric{position:absolute;left:0;right:0;bottom:150px;display:flex;flex-direction:column;align-items:center;
+  gap:5px;padding:0 15%;pointer-events:none;text-align:center;
+  transition:opacity .3s ease,transform .3s ease,right .3s cubic-bezier(.22,.7,.3,1)}
+.mv-lyric[data-empty="1"]{opacity:0;transform:translateY(9px)}
+.mv-lyric-main{font-size:17.5px;font-weight:600;line-height:1.45;letter-spacing:.01em;color:#fff;
+  text-shadow:0 2px 16px rgba(0,0,0,.78);max-width:100%;padding:5px 16px;border-radius:11px;
+  background:rgba(0,0,0,.26);backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px)}
+.mv-lyric-sub{font-size:12.5px;line-height:1.5;color:rgba(255,255,255,.78);
+  text-shadow:0 1px 12px rgba(0,0,0,.72);max-width:100%}
+.mv-lyric[data-anim="1"] .mv-lyric-main{animation:mvline .34s cubic-bezier(.22,.7,.3,1)}
+@keyframes mvline{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+
+/* 播放列表：右侧抽屉，跟 QQ 音乐一样把接下来要看的 MV 都摊开 */
+.mv-queue{position:absolute;top:0;right:0;bottom:0;width:312px;display:flex;flex-direction:column;
+  background:linear-gradient(to left,rgba(13,13,15,.97),rgba(13,13,15,.93));
+  border-left:1px solid rgba(255,255,255,.07);backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);
+  transform:translateX(101%);transition:transform .3s cubic-bezier(.22,.7,.3,1);
+  pointer-events:auto;z-index:6}
+.mv-queue[data-open="1"]{transform:translateX(0)}
+.mv-queue-head{display:flex;align-items:center;gap:8px;padding:18px 12px 10px 18px}
+.mv-queue-title{font-size:13px;font-weight:600;letter-spacing:.02em}
+.mv-queue-count{font-size:11px;color:rgba(255,255,255,.42);font-variant-numeric:tabular-nums}
+.mv-queue-list{flex:1;min-height:0;overflow-y:auto;padding:2px 10px 18px}
+.mv-queue-list::-webkit-scrollbar{width:6px}
+.mv-queue-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:3px}
+.mv-qrow{display:flex;gap:10px;width:100%;align-items:center;padding:7px 8px;border:0;border-radius:9px;
+  background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background .14s}
+.mv-qrow:hover{background:rgba(255,255,255,.07)}
+.mv-qrow[data-current="1"]{background:rgba(251,114,153,.14)}
+.mv-qthumb{position:relative;width:78px;height:44px;border-radius:6px;overflow:hidden;flex:none;
+  background:rgba(255,255,255,.06)}
+.mv-qthumb img{width:100%;height:100%;object-fit:cover;display:block}
+.mv-qbadge{position:absolute;left:4px;bottom:4px;font-size:9px;font-weight:700;letter-spacing:.04em;
+  padding:1px 4px;border-radius:3px;background:rgba(0,0,0,.6);color:#ffa8c0}
+.mv-qbadge[data-official="1"]{background:rgba(251,114,153,.86);color:#fff}
+.mv-qbody{min-width:0;flex:1}
+.mv-qtitle{font-size:12px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+  overflow:hidden}
+.mv-qrow[data-current="1"] .mv-qtitle{color:#ffc2d4}
+.mv-qsub{margin-top:2px;font-size:10.5px;color:rgba(255,255,255,.42);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.mv-qbars{display:flex;align-items:flex-end;gap:2px;height:11px;flex:none;padding-left:2px}
+.mv-qbars i{width:2px;border-radius:1px;background:#fb7299;animation:mvbars .95s ease-in-out infinite}
+.mv-qbars i:nth-child(2){animation-delay:.18s}
+.mv-qbars i:nth-child(3){animation-delay:.42s}
+@keyframes mvbars{0%,100%{height:3px}50%{height:11px}}
+.mv-qempty{padding:18px 12px;font-size:12px;line-height:1.7;color:rgba(255,255,255,.42)}
+
+/* 播放列表拉开时：控件、歌词都让出右边那条 */
+.mv-root[data-queue="1"] .mv-top{right:312px}
+.mv-root[data-queue="1"] .mv-bottom{right:312px}
+.mv-root[data-queue="1"] .mv-lyric{right:312px}
 
 /* 控件自动隐藏 */
 .mv-root[data-idle="1"] .mv-top,.mv-root[data-idle="1"] .mv-bottom{opacity:0;pointer-events:none}
@@ -250,6 +307,26 @@ export default function activate(folium) {
       ),
     },
     {
+      key: 'showLyrics',
+      type: 'boolean',
+      defaultValue: true,
+      label: label('叠一行歌词', 'Show one lyric line'),
+      description: label(
+        '画面底部居中显示当前这一句（有翻译的话带翻译）。MV 带前奏时可能对不齐，播放时按 [ / ] 各调 0.2 秒，调过会按这支 MV 记住。',
+        'Shows the current lyric line over the video. Nudge the timing with [ and ] — remembered per video.',
+      ),
+    },
+    {
+      key: 'autoNext',
+      type: 'boolean',
+      defaultValue: true,
+      label: label('一段放完接着看下一首', 'Roll on to the next MV'),
+      description: label(
+        '按 Folia 的播放队列顺序连播：一支 MV 放完就切到队列里的下一首，MV 跟着换过去。关掉就停在最后一帧。',
+        'Follows the queue order: when an MV ends, the next song in the queue starts and its MV loads.',
+      ),
+    },
+    {
       key: 'volume',
       type: 'number',
       defaultValue: 90,
@@ -301,6 +378,8 @@ export default function activate(folium) {
     return {
       quality: qualityList.includes(raw.quality) ? raw.quality : 'auto',
       pauseMusic: raw.pauseMusic !== false,
+      showLyrics: raw.showLyrics !== false,
+      autoNext: raw.autoNext !== false,
       volume: Number.isFinite(volume) ? clamp(volume, 0, 100) : 90,
     };
   }
@@ -323,6 +402,8 @@ export default function activate(folium) {
     qualityOverride: '',
     lastError: '',
     dragging: false,
+    queueOpen: false,
+    lyricOffset: 0,
     generation: 0,
   };
 
@@ -611,6 +692,13 @@ export default function activate(folium) {
   spacer.className = 'mv-spacer';
   controls.appendChild(spacer);
 
+  const btnQueue = document.createElement('button');
+  btnQueue.type = 'button';
+  btnQueue.className = 'mv-btn tall';
+  btnQueue.title = '播放列表（L）';
+  btnQueue.innerHTML = `${ICON_LIST}<span>列表</span>`;
+  controls.appendChild(btnQueue);
+
   const qualityWrap = document.createElement('div');
   qualityWrap.className = 'mv-wrap-menu';
   const btnQuality = document.createElement('button');
@@ -653,6 +741,51 @@ export default function activate(folium) {
 
   bottom.appendChild(controls);
   root.appendChild(bottom);
+
+  /* --- 歌词：一行 --- */
+  const lyricWrap = document.createElement('div');
+  lyricWrap.className = 'mv-lyric';
+  lyricWrap.setAttribute('data-empty', '1');
+  const lyricMain = document.createElement('div');
+  lyricMain.className = 'mv-lyric-main';
+  const lyricSub = document.createElement('div');
+  lyricSub.className = 'mv-lyric-sub';
+  lyricWrap.appendChild(lyricMain);
+  lyricWrap.appendChild(lyricSub);
+  root.appendChild(lyricWrap);
+
+  /* --- 播放列表（右侧抽屉） --- */
+  const queuePanel = document.createElement('aside');
+  queuePanel.className = 'mv-queue';
+  queuePanel.setAttribute('data-open', '0');
+
+  const queueHead = document.createElement('div');
+  queueHead.className = 'mv-queue-head';
+  const queueTitle = document.createElement('div');
+  queueTitle.className = 'mv-queue-title';
+  queueTitle.textContent = '播放列表';
+  const queueCount = document.createElement('div');
+  queueCount.className = 'mv-queue-count';
+  const queueSpacer = document.createElement('div');
+  queueSpacer.className = 'mv-spacer';
+  const btnQueueClose = document.createElement('button');
+  btnQueueClose.type = 'button';
+  btnQueueClose.className = 'mv-btn ghost round';
+  btnQueueClose.style.width = '28px';
+  btnQueueClose.style.height = '28px';
+  btnQueueClose.title = '收起列表（L）';
+  btnQueueClose.innerHTML = ICON_CLOSE;
+  queueHead.appendChild(queueTitle);
+  queueHead.appendChild(queueCount);
+  queueHead.appendChild(queueSpacer);
+  queueHead.appendChild(btnQueueClose);
+
+  const queueList = document.createElement('div');
+  queueList.className = 'mv-queue-list';
+
+  queuePanel.appendChild(queueHead);
+  queuePanel.appendChild(queueList);
+  root.appendChild(queuePanel);
 
   /* ---------------------------------------------------------------- *
    * 播放器：源切换、同步、控件
@@ -795,7 +928,10 @@ export default function activate(folium) {
 
   /* ---- 视频事件 ---- */
 
-  video.addEventListener('timeupdate', updateProgress);
+  video.addEventListener('timeupdate', () => {
+    updateProgress();
+    paintLyric(false);
+  });
   video.addEventListener('durationchange', updateProgress);
   video.addEventListener('loadedmetadata', () => {
     updateProgress();
@@ -827,6 +963,13 @@ export default function activate(folium) {
     state.phase = 'playing';
     syncPlayIcon();
     poke(true);
+    if (!state.open) return;
+    if (!settings().autoNext) {
+      lyricIndex = -2;
+      paintLyric(true);
+      return;
+    }
+    advanceQueue();
   });
   video.addEventListener('error', () => {
     if (!state.open) return;
@@ -839,6 +982,367 @@ export default function activate(folium) {
     audio.removeAttribute('src');
     video.muted = state.muted;
   });
+
+  /* ---------------------------------------------------------------- *
+   * 歌词：一行
+   *
+   * 看 MV 时宿主的音乐是暂停的，所以歌词时钟只能用画面自己的 currentTime。
+   * MV 常常带前奏 / 对白，跟原曲对不齐是常态 —— 给一个 0.2 秒一档的手动偏移，
+   * 按 bvid 记住：同一支 MV 只需要调一次。
+   * ---------------------------------------------------------------- */
+
+  /** 歌词前部的「作词 / 作曲 / 编曲」这类标注行不当作歌词。 */
+  const LYRIC_META =
+    /^(作词|作曲|编曲|制作人|制作|监制|出品|发行|混音|母带|录音|吉他|贝斯|鼓|键盘|和声|弦乐|校对|翻译|词|曲|编)\s*[：:]/;
+  const LYRIC_OFFSET_KEY = 'bili-mv-cinema:lyric-offset:';
+
+  let lyricLines = [];
+  let lyricIndex = -2;
+  let lyricBvid = '';
+
+  function loadLyricOffset(bvid) {
+    if (!bvid) return 0;
+    try {
+      const value = Number(window.localStorage.getItem(LYRIC_OFFSET_KEY + bvid));
+      if (Number.isFinite(value) && Math.abs(value) <= 15000) return value;
+    } catch {
+      /* 隐私模式没有 localStorage */
+    }
+    return 0;
+  }
+
+  function saveLyricOffset() {
+    if (!lyricBvid) return;
+    try {
+      window.localStorage.setItem(LYRIC_OFFSET_KEY + lyricBvid, String(state.lyricOffset));
+    } catch {
+      /* 同上 */
+    }
+  }
+
+  function lyricLinesFrom(raw) {
+    const out = [];
+    if (!Array.isArray(raw)) return out;
+    for (const line of raw) {
+      const text = String((line && line.fullText) || '').trim();
+      const start = Number(line && line.startTime);
+      if (!text || !Number.isFinite(start) || start < 0) continue;
+      if (LYRIC_META.test(text)) continue;
+      const end = Number(line && line.endTime);
+      const sub = String((line && (line.translation || line.romanization)) || '').trim();
+      out.push({ start, end: Number.isFinite(end) && end > start ? end : start + 6, text, sub });
+    }
+    out.sort((a, b) => a.start - b.start);
+    return out;
+  }
+
+  function refreshLyrics() {
+    let raw = [];
+    try {
+      if (folium.lyrics && typeof folium.lyrics.getLines === 'function') {
+        raw = folium.lyrics.getLines() || [];
+      }
+    } catch {
+      raw = [];
+    }
+    lyricLines = lyricLinesFrom(raw);
+
+    // 没拿到歌词时，试试在线源（omni 公开接口），失败就当没歌词。
+    if (!lyricLines.length && state.song && folium.omni && typeof folium.omni.getLyrics === 'function') {
+      Promise.resolve(folium.omni.getLyrics(state.song))
+        .then((result) => {
+          const lines = lyricLinesFrom(result && result.lines);
+          if (!lines.length || !state.open) return;
+          lyricLines = lines;
+          lyricIndex = -2;
+          paintLyric(true);
+        })
+        .catch(() => {});
+    }
+
+    lyricIndex = -2;
+    paintLyric(true);
+  }
+
+  function paintLyric(force) {
+    const enabled = settings().showLyrics;
+    if (!enabled || !state.open || !lyricLines.length) {
+      if (force || !enabled) lyricWrap.setAttribute('data-empty', '1');
+      return;
+    }
+
+    const clock = (video.currentTime || 0) + state.lyricOffset / 1000;
+
+    // 二分找「最后一个开始时间 <= 当前时间」的那句
+    let lo = 0;
+    let hi = lyricLines.length - 1;
+    let index = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (lyricLines[mid].start <= clock) {
+        index = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+
+    // 长间奏：上一句挂太久就收掉，别一直停在屏幕上
+    if (index >= 0 && clock > lyricLines[index].end + 2.5) index = -1;
+
+    if (index === lyricIndex && !force) return;
+    lyricIndex = index;
+
+    if (index < 0) {
+      lyricWrap.setAttribute('data-empty', '1');
+      return;
+    }
+
+    const line = lyricLines[index];
+    lyricMain.textContent = line.text;
+    lyricSub.textContent = line.sub || '';
+    lyricSub.style.display = line.sub ? 'block' : 'none';
+    lyricWrap.setAttribute('data-empty', '0');
+
+    // 重放入场动画
+    lyricWrap.removeAttribute('data-anim');
+    void lyricWrap.offsetWidth;
+    lyricWrap.setAttribute('data-anim', '1');
+  }
+
+  function nudgeLyric(deltaMs) {
+    if (!lyricLines.length) {
+      folium.ui.toast('这首歌没有歌词', { durationMs: 1600 });
+      return;
+    }
+    state.lyricOffset = clamp(state.lyricOffset + deltaMs, -15000, 15000);
+    saveLyricOffset();
+    paintLyric(true);
+    const seconds = Math.abs(state.lyricOffset / 1000).toFixed(1);
+    folium.ui.toast(
+      state.lyricOffset === 0
+        ? '歌词偏移已归零'
+        : `歌词${state.lyricOffset > 0 ? '延后' : '提前'} ${seconds}s`,
+      { durationMs: 1400 },
+    );
+  }
+
+  /* ---------------------------------------------------------------- *
+   * 播放列表：右侧抽屉
+   *
+   * 数据来自宿主的播放队列（不是自己去搜一堆歌）：
+   *   · 队列里每首歌先拿专辑封面顶上，能立刻显示；
+   *   · 再把可视区前几首丢给 main 搜一下，搜到真 MV 就换成 MV 封面 + 角标；
+   *   · 点一行 = 切到那首（宿主换歌，这边跟着换 MV）。
+   * ---------------------------------------------------------------- */
+
+  const thumbCache = new Map(); // songKey → { cover, official, bvid, missing }
+  let thumbToken = 0;
+
+  function queueSnapshot() {
+    try {
+      const playback = folium.playback;
+      if (!playback || typeof playback.getQueue !== 'function') return null;
+      const snap = playback.getQueue({ limit: 100 });
+      if (!snap || !Array.isArray(snap.items)) return null;
+      return snap;
+    } catch {
+      return null;
+    }
+  }
+
+  function thumbOf(key) {
+    return thumbCache.get(key) || null;
+  }
+
+  function applyThumb(row, key) {
+    const thumb = thumbOf(key);
+    const img = row.querySelector('img');
+    const badge = row.querySelector('.mv-qbadge');
+    if (!thumb || !thumb.cover) {
+      if (badge) badge.style.display = 'none';
+      return;
+    }
+    if (img && img.getAttribute('src') !== thumb.cover) img.setAttribute('src', thumb.cover);
+    if (badge) {
+      badge.style.display = '';
+      badge.textContent = thumb.official ? '官方 MV' : 'MV';
+      badge.setAttribute('data-official', thumb.official ? '1' : '0');
+    }
+  }
+
+  async function loadThumbs(pending) {
+    if (!pending.length) return;
+    const token = ++thumbToken;
+    let result = null;
+    try {
+      result = await folium.rpc.call('mvPreview', {
+        items: pending.map((entry) => ({
+          key: entry.key,
+          title: entry.title,
+          artist: entry.artist,
+          durationMs: entry.durationMs,
+        })),
+      });
+    } catch (err) {
+      log.info('MV 影院：播放列表缩略图没拿到', String((err && err.message) || err));
+      return;
+    }
+    if (token !== thumbToken) return;
+
+    const rows = Array.isArray(result && result.results) ? result.results : [];
+    for (const item of rows) {
+      if (!item || !item.key) continue;
+      thumbCache.set(item.key, {
+        cover: item.cover || '',
+        official: Number(item.official) || 0,
+        bvid: item.bvid || '',
+        missing: !item.cover,
+      });
+    }
+    // 长会话里别把整张表都留着
+    while (thumbCache.size > 300) thumbCache.delete(thumbCache.keys().next().value);
+    // 只更新还活着的那些行
+    for (const row of queueList.querySelectorAll('.mv-qrow')) {
+      applyThumb(row, row.getAttribute('data-key') || '');
+    }
+  }
+
+  function renderQueue() {
+    // 抽屉没开就不画：换歌时会调到这里，没必要为看不见的列表发请求。
+    if (!state.queueOpen) return;
+
+    const snap = queueSnapshot();
+    queueList.innerHTML = '';
+
+    if (!snap || !snap.items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'mv-qempty';
+      empty.textContent = '播放队列是空的。在 Folia 里放一张歌单，这里就会列出接下来要看的 MV。';
+      queueList.appendChild(empty);
+      queueCount.textContent = '';
+      return;
+    }
+
+    const currentIndex = Number.isFinite(snap.currentIndex) ? snap.currentIndex : 0;
+    const total = Number(snap.length) || snap.items.length;
+    const items = snap.items
+      .filter((item) => item && item.song && Number(item.index) >= currentIndex)
+      .slice(0, 60);
+
+    queueCount.textContent = items.length ? `${currentIndex + 1}/${total}` : '';
+
+    const currentKey = state.song ? songKey(state.song) : '';
+    const pending = [];
+
+    for (const item of items) {
+      const song = item.song;
+      const key = songKey(song);
+      // 队列的 currentIndex 是宿主的事实；拿不到时再按歌名兜底。
+      const isCurrent = Number.isFinite(snap.currentIndex)
+        ? Number(item.index) === currentIndex
+        : key === currentKey;
+
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'mv-qrow';
+      row.setAttribute('data-key', key);
+      row.setAttribute('data-current', isCurrent ? '1' : '0');
+
+      const thumb = document.createElement('div');
+      thumb.className = 'mv-qthumb';
+      const img = document.createElement('img');
+      img.alt = '';
+      img.loading = 'lazy';
+      // B 站图床认 Referer：从别的站点引用会 403，所以一律不带 Referer。
+      img.referrerPolicy = 'no-referrer';
+      const cachedThumb = thumbOf(key);
+      const cover =
+        (cachedThumb && cachedThumb.cover) || song.coverUrl || song.cover || song.picUrl || '';
+      if (cover) img.setAttribute('src', cover);
+      thumb.appendChild(img);
+
+      const badge = document.createElement('span');
+      badge.className = 'mv-qbadge';
+      badge.style.display = 'none';
+      thumb.appendChild(badge);
+      row.appendChild(thumb);
+
+      const body = document.createElement('div');
+      body.className = 'mv-qbody';
+      const name = document.createElement('div');
+      name.className = 'mv-qtitle';
+      name.textContent = songTitleOf(song) || '未知曲目';
+      const sub = document.createElement('div');
+      sub.className = 'mv-qsub';
+      const seconds = songDurationSec(song);
+      sub.textContent = [songArtistOf(song), seconds ? fmtTime(seconds) : ''].filter(Boolean).join(' · ');
+      body.appendChild(name);
+      body.appendChild(sub);
+      row.appendChild(body);
+
+      if (isCurrent) {
+        const bars = document.createElement('div');
+        bars.className = 'mv-qbars';
+        bars.innerHTML = '<i></i><i></i><i></i>';
+        row.appendChild(bars);
+      }
+
+      if (cachedThumb) applyThumb(row, key);
+      else if (!isCurrent && pending.length < 8) {
+        pending.push({
+          key,
+          title: songTitleOf(song),
+          artist: songArtistOf(song),
+          durationMs: seconds * 1000,
+        });
+      }
+
+      row.addEventListener('click', () => {
+        void playQueueIndex(Number(item.index));
+      });
+
+      queueList.appendChild(row);
+    }
+
+    void loadThumbs(pending);
+  }
+
+  async function playQueueIndex(index) {
+    if (!Number.isFinite(index)) return;
+    try {
+      const ok = await folium.playback.playQueueItem(index);
+      if (ok === false) folium.ui.toast('这首歌现在播不了', { durationMs: 2200 });
+    } catch (err) {
+      folium.ui.toast(`切歌失败：${String((err && err.message) || err)}`, {
+        type: 'error',
+        durationMs: 2600,
+      });
+    }
+  }
+
+  function setQueueOpen(flag) {
+    state.queueOpen = Boolean(flag);
+    queuePanel.setAttribute('data-open', state.queueOpen ? '1' : '0');
+    btnQueue.setAttribute('data-active', state.queueOpen ? '1' : '0');
+    if (state.queueOpen) root.setAttribute('data-queue', '1');
+    else root.removeAttribute('data-queue');
+    if (state.queueOpen) {
+      renderQueue();
+      poke(true);
+    }
+  }
+
+  /** MV 放完：队列里还有下一首就交给宿主换歌，换歌事件会把 MV 也带过去。 */
+  function advanceQueue() {
+    const snap = queueSnapshot();
+    if (!snap) return false;
+    const total = Number(snap.length) || snap.items.length;
+    const currentIndex = Number.isFinite(snap.currentIndex) ? snap.currentIndex : 0;
+    if (currentIndex + 1 >= total) return false;
+    void playQueueIndex(currentIndex + 1);
+    return true;
+  }
 
   /* ---- 加载 / 错误 / 拦截 三种中间态 ---- */
 
@@ -890,6 +1394,7 @@ export default function activate(folium) {
       const thumb = document.createElement('img');
       thumb.className = 'mv-cand-thumb';
       thumb.loading = 'lazy';
+      thumb.referrerPolicy = 'no-referrer';
       if (item.cover) thumb.src = item.cover;
       row.appendChild(thumb);
 
@@ -1057,7 +1562,7 @@ export default function activate(folium) {
     subEl.innerHTML = '';
     const chip = document.createElement('span');
     chip.className = 'mv-chip';
-    chip.textContent = 'MV';
+    chip.textContent = info.official ? '官方 MV' : 'MV';
     subEl.appendChild(chip);
 
     const artist = songArtistOf(song);
@@ -1072,6 +1577,12 @@ export default function activate(folium) {
       subEl.appendChild(dot);
       subEl.appendChild(document.createTextNode(qualityLabel));
     }
+    if (info.typename && info.typename !== 'MV') {
+      const dot = document.createElement('span');
+      dot.className = 'mv-dot';
+      subEl.appendChild(dot);
+      subEl.appendChild(document.createTextNode(info.typename));
+    }
     if (info.mode === 'silent') {
       const dot = document.createElement('span');
       dot.className = 'mv-dot';
@@ -1085,6 +1596,12 @@ export default function activate(folium) {
     for (const item of qualityMenu.querySelectorAll('[data-role="quality"]')) {
       const active = item.getAttribute('data-value') === (state.qualityOverride || settings().quality);
       item.setAttribute('data-active', active ? '1' : '0');
+    }
+
+    // 换了一支视频 → 换一套歌词偏移
+    if (info.bvid && info.bvid !== lyricBvid) {
+      lyricBvid = info.bvid;
+      state.lyricOffset = loadLyricOffset(lyricBvid);
     }
   }
 
@@ -1112,10 +1629,50 @@ export default function activate(folium) {
     state.qualityOverride = '';
     state.candidates = [];
     state.keyword = '';
+    state.lyricOffset = 0;
+    lyricBvid = '';
+    lyricLines = [];
+    lyricIndex = -2;
+    setQueueOpen(false);
 
     kickoff();
     if (settings().pauseMusic) pauseHost();
     applyVolume();
+    refreshLyrics();
+
+    const cached = resolvedCache.get(songKey(song));
+    if (cached) {
+      state.keyword = cached.keyword || '';
+      applyInfo(cached);
+      playSource(cached, 0);
+      return;
+    }
+
+    const mine = pinned.get(songKey(song));
+    void resolve(mine ? { bvid: mine } : {});
+  }
+
+  /**
+   * 换歌：MV 跟着换，而不是关掉。
+   *
+   * 队列连播、点播放列表、宿主媒体键切歌都会走到这里 —— 以前是直接收场，
+   * 现在既然有播放列表，跟着换才是用户期待的。真的没歌声了才关。
+   */
+  function followSong(song) {
+    state.song = song;
+    state.generation += 1;
+    state.keyword = '';
+    state.candidates = [];
+    state.qualityOverride = '';
+    lyricLines = [];
+    lyricIndex = -2;
+    lyricWrap.setAttribute('data-empty', '1');
+
+    clearMedia();
+    if (settings().pauseMusic) pauseHost();
+    applyVolume();
+    refreshLyrics();
+    renderQueue();
 
     const cached = resolvedCache.get(songKey(song));
     if (cached) {
@@ -1137,6 +1694,10 @@ export default function activate(folium) {
     document.removeEventListener('keydown', onKey, true);
     hideCenter();
     clearMedia();
+    setQueueOpen(false);
+    lyricLines = [];
+    lyricIndex = -2;
+    lyricWrap.setAttribute('data-empty', '1');
     root.setAttribute('data-shown', '0');
     root.setAttribute('data-idle', '0');
     if (hideTimer) {
@@ -1170,11 +1731,12 @@ export default function activate(folium) {
       clearTimeout(hideTimer);
       hideTimer = 0;
     }
-    const shouldHide = state.open && state.phase === 'playing' && !video.paused && !force;
+    const shouldHide =
+      state.open && state.phase === 'playing' && !video.paused && !force && !state.queueOpen;
     if (!shouldHide) return;
     hideTimer = window.setTimeout(() => {
       hideTimer = 0;
-      if (state.open && !video.paused) root.setAttribute('data-idle', '1');
+      if (state.open && !video.paused && !state.queueOpen) root.setAttribute('data-idle', '1');
     }, 2800);
   }
 
@@ -1185,13 +1747,31 @@ export default function activate(folium) {
 
   function onKey(event) {
     if (!state.open) return;
+
+    // 在搜索框里打字：除了 Esc，别的键都交给输入框。
+    const tag = event.target && event.target.tagName ? String(event.target.tagName) : '';
+    const typing = tag === 'INPUT' || tag === 'TEXTAREA';
+
     if (event.key === 'Escape') {
       if (document.fullscreenElement) return; // 先让浏览器退全屏
+      if (typing) {
+        event.target.blur();
+        return;
+      }
+      if (state.queueOpen) {
+        setQueueOpen(false);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       close();
       event.preventDefault();
       event.stopPropagation();
       return;
     }
+
+    if (typing) return;
+
     if (event.code === 'Space' || event.key === ' ') {
       toggle();
       event.preventDefault();
@@ -1210,6 +1790,33 @@ export default function activate(folium) {
       poke();
       event.preventDefault();
       event.stopPropagation();
+      return;
+    }
+    if (event.key === 'l' || event.key === 'L') {
+      setQueueOpen(!state.queueOpen);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.key === '[') {
+      nudgeLyric(-200);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.key === ']') {
+      nudgeLyric(200);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.key === '\\') {
+      state.lyricOffset = 0;
+      saveLyricOffset();
+      paintLyric(true);
+      folium.ui.toast('歌词偏移已归零', { durationMs: 1400 });
+      event.preventDefault();
+      event.stopPropagation();
     }
   }
 
@@ -1218,6 +1825,8 @@ export default function activate(folium) {
   btnBack.addEventListener('click', () => close());
   btnClose.addEventListener('click', () => close());
   btnPlay.addEventListener('click', () => toggle());
+  btnQueue.addEventListener('click', () => setQueueOpen(!state.queueOpen));
+  btnQueueClose.addEventListener('click', () => setQueueOpen(false));
   bigPlay.addEventListener('click', () => {
     showBlocked(false);
     toggle();
@@ -1395,7 +2004,7 @@ export default function activate(folium) {
     },
   });
 
-  // 换歌就收场：用户点的是「这首歌的 MV」，换歌继续放上一首的 MV 是 bug 不是功能。
+  // 换歌：MV 跟着换（队列连播 / 播放列表点选 / 宿主媒体键都走这条路）。
   const unsubscribers = [];
   function subscribe(name, handler) {
     try {
@@ -1409,7 +2018,24 @@ export default function activate(folium) {
 
   subscribe('playback.songChanged', ({ song }) => {
     if (!state.open) return;
-    if (!song || songKey(song) !== songKey(state.song)) close(false);
+    if (!song) {
+      close(false);
+      return;
+    }
+    if (state.song && songKey(song) === songKey(state.song)) return;
+    followSong(song);
+  });
+
+  // 歌词是异步解析的：换歌之后才到齐很常见。
+  subscribe('lyrics.loaded', (payload) => {
+    if (!state.open) return;
+    const song = (payload && payload.song) || state.song;
+    if (song && state.song && songKey(song) !== songKey(state.song)) return;
+    refreshLyrics();
+  });
+
+  subscribe('playback.queueChanged', () => {
+    if (state.open && state.queueOpen) renderQueue();
   });
 
   subscribe('playback.stateChanged', ({ state: next }) => {

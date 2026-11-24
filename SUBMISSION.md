@@ -1,14 +1,21 @@
 # 上架记录 · MV 影院 bili-mv-cinema
 
-## 当前状态（v1.0.0，首个版本）
+## 当前状态（v1.1.0）
 
 | 项 | 状态 |
 |---|---|
-| 版本 | **1.0.0**（新模组，未提交） |
+| 版本 | **1.1.0**（未提交） |
 | 代码 | `bili-mv-cinema/` · `node test/smoke.mjs` 全绿 |
 | 预览图 | `bili-mv-cinema/preview.jpg`（真 B 站 MV 帧 + 模组真实 DOM 截图，`node test/build_preview.mjs` 可复现） |
 | 仓库 | 待建：`git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git` |
-| 剩下的事 | 建空仓 → push `main` + tag `v1.0.0` → 提上架 issue |
+| 剩下的事 | 建空仓 → push `main` + tag `v1.1.0` → 提上架 issue |
+
+### v1.1.0 改了什么
+
+- **官方权重**：投稿分区 `MV` +30、UP 主名带官方/厂牌、UP 主认证（机构认证 +22 / 认证名带歌手名 +12 / 歌手本人号 +16）三层加码；头部不够像 MV 时补搜一次「歌名 歌手 MV」并合并去重。8 首歌实测全部落到 `MV` 分区。
+- **叠一行歌词**：底部一行当前句 + 翻译，`[` / `]` 调偏移、`\` 归零，按 bvid 记住。
+- **播放列表**：右侧抽屉按 Folia 队列列出接下来要看的 MV（封面先专辑图、再换成 B 站 MV 封面），点一行切过去，放完自动连播下一首。
+- 换歌不再是「关掉 MV」，而是跟着换片（队列连播 / 点列表 / 媒体键都生效）。
 
 ## 一、模组自述（提交字段可直接用）
 
@@ -37,8 +44,8 @@
    ```bash
    cd ~/folia-mod-bili-mv-cinema
    git init && git add -A
-   git commit -m "feat: MV 影院 v1.0.0 — 播放栏 MV 按钮 + 全屏有声播放"
-   git tag v1.0.0
+   git commit -m "feat: MV 影院 v1.1.0 — 官方权重 + 歌词行 + 播放列表"
+   git tag v1.1.0
    git branch -M main
    git remote add origin git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git
    git push -u origin main --tags
@@ -48,7 +55,7 @@
 
    - `mod-id`: `bili-mv-cinema`
    - `repo`: `Zhangyx0824/folia-mod-bili-mv-cinema`
-   - `ref`: `v1.0.0`
+   - `ref`: `v1.1.0`
    - 简介与截图用上面的自述 + `preview.jpg`
 
    审核 CI 会给通过的版本打 `signed` 标签，随后出现在模组市场。

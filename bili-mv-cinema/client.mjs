@@ -17,7 +17,8 @@ import qrcode from './vendor/qrcode.mjs';
 // 二维码内容是 ASCII，但用 UTF-8 字节表更保险。
 qrcode.stringToBytes = qrcode.stringToBytesFuncs['UTF-8'];
 
-const VOL_KEY = 'bili-mv-cinema:volume';
+/** 音量、挑片记录、封面缓存都存在 folium.storage（模组自己的数据目录）里。 */
+const VOL_KEY = 'volume';
 
 const label = (zh, en) => ({ 'zh-CN': zh, en });
 
@@ -26,6 +27,12 @@ const label = (zh, en) => ({ 'zh-CN': zh, en });
  * ------------------------------------------------------------------ */
 
 const ICON_MV = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M10 10.2v3.6l3.4-1.8z" fill="currentColor" stroke="none"/></svg>`;
+
+/** 封面还没到时的占位：一格胶片 + 播放三角。比一块灰要好认，也和 MV 按钮是同一套形状。 */
+const ICON_FRAME = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.6" y="4.8" width="18.8" height="14.4" rx="3.4"/><path d="M7.2 4.9v14.2M16.8 4.9v14.2" opacity=".5"/><path d="M10.7 9.5v5l4.1-2.5z" fill="currentColor" stroke="none"/></svg>`;
+
+/** 塞进宿主歌曲行里的那一个：跟行内的操作图标同一尺寸（16px） */
+const ICON_MV_ROW = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.4" y="5.2" width="19.2" height="13.6" rx="3"/><path d="M10 10.4v3.2l3.2-1.6z" fill="currentColor" stroke="none"/></svg>`;
 
 const ICON_BACK = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>`;
 
@@ -39,7 +46,9 @@ const ICON_VOLUME = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none"
 
 const ICON_MUTED = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/><path d="M16.5 9.5l4.5 5M21 9.5l-4.5 5"/></svg>`;
 
-const ICON_EXPAND = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H4v5M15 4h5v5M15 20h5v-5M9 20H4v-5"/></svg>`;
+/* 整窗全屏按钮已移除：宿主 preload 的私有通道不属于 Folium 公开接口，DOM 全屏
+ * 在 Folia 这个窗口又不生效。全屏交给应用右上角自带的按钮，模组只用公开的
+ * resize / fullscreenchange 事件跟随，让抽屉标题栏继续给窗口按钮让位。 */
 
 const ICON_LINK = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 13.5a4 4 0 006 .5l2.2-2.2a4 4 0 00-5.7-5.7l-1.2 1.2"/><path d="M13.5 10.5a4 4 0 00-6-.5L5.3 12.2a4 4 0 005.7 5.7l1.2-1.2"/></svg>`;
 
@@ -60,11 +69,7 @@ const ICON_TARGET = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none"
 const CSS = `
 .mv-root{position:absolute;inset:0;box-sizing:border-box;background:#000;color:#fff;
   font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",Arial,sans-serif;
-  pointer-events:auto;display:none;opacity:0;transition:opacity .2s ease;overflow:hidden;
-  /* 窗口右上角那排按钮（全屏 / 最小化 / 关闭）占掉的高度：抽屉从这里往下开始画，
-     免得列表的叉号、定位按钮跟它们叠在一块儿。真实值在运行时量（syncChromeTop），
-     这里的 52px 只是量不到时的兜底；整窗全屏时归零。 */
-  --mv-chrome-top:52px}
+  pointer-events:auto;display:none;opacity:0;transition:opacity .2s ease;overflow:hidden}
 .mv-root[data-open="1"]{display:block}
 .mv-root[data-shown="1"]{opacity:1}
 .mv-root *{box-sizing:border-box}
@@ -169,17 +174,19 @@ const CSS = `
 .mv-bigplay svg{width:30px;height:30px;margin-left:3px}
 
 /* 播放列表：右侧抽屉，跟 QQ 音乐一样把接下来要看的 MV 都摊开。
-   top 不贴 0：窗口右上角那排按钮是宿主画的，抽屉的标题栏（定位 / 叉号）得让开它们；
-   整窗全屏时没有那排按钮，抽屉再顶到边上。 */
-.mv-queue{position:absolute;top:var(--mv-chrome-top);right:0;bottom:0;width:312px;display:flex;flex-direction:column;
+   底色通顶（跟播放页的侧栏一样有整块感），但标题栏的内容要让开宿主浮在右上角的
+   那簇窗口按钮（上一首 / 播放 / 下一首 / 远程 / 全屏）—— 只让内容往下走，
+   黑色背景不动，见 .mv-queue-head 的 padding-top。 */
+.mv-queue{position:absolute;top:0;right:0;bottom:0;width:312px;display:flex;flex-direction:column;
   background:linear-gradient(to left,rgba(13,13,15,.97),rgba(13,13,15,.93));
-  border-left:1px solid rgba(255,255,255,.07);border-top-left-radius:12px;
+  border-left:1px solid rgba(255,255,255,.07);
   backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);
   transform:translateX(101%);transition:transform .3s cubic-bezier(.22,.7,.3,1);
   pointer-events:auto;z-index:6}
-.mv-root[data-fs="1"] .mv-queue{top:0;border-top-left-radius:0}
 .mv-queue[data-open="1"]{transform:translateX(0)}
-.mv-queue-head{display:flex;align-items:center;gap:8px;padding:16px 12px 10px 18px}
+/* --mv-chrome-top 是运行时量出来的「宿主窗口按钮那一簇的底边 + 8px」，只作用在内容上 */
+.mv-queue-head{display:flex;align-items:center;gap:8px;
+  padding:var(--mv-chrome-top,16px) 12px 10px 18px}
 .mv-queue-title{font-size:13px;font-weight:600;letter-spacing:.02em}
 .mv-queue-count{font-size:11px;color:rgba(255,255,255,.42);font-variant-numeric:tabular-nums}
 .mv-queue-list{flex:1;min-height:0;overflow-y:auto;padding:2px 10px 18px}
@@ -189,9 +196,14 @@ const CSS = `
   background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background .14s}
 .mv-qrow:hover{background:rgba(255,255,255,.07)}
 .mv-qrow[data-current="1"]{background:rgba(251,114,153,.14)}
-.mv-qthumb{position:relative;width:78px;height:44px;border-radius:6px;overflow:hidden;flex:none;
-  background:rgba(255,255,255,.06)}
-.mv-qthumb img{width:100%;height:100%;object-fit:cover;display:block}
+.mv-qthumb{position:relative;width:78px;height:44px;border-radius:7px;overflow:hidden;flex:none;
+  background:linear-gradient(135deg,rgba(255,255,255,.10),rgba(255,255,255,.045))}
+.mv-qthumb img{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .22s ease}
+.mv-qthumb[data-loaded="1"] img{opacity:1}
+/* 还没拿到封面时的那块底：圆角跟缩略图一致，描边用 inset 阴影（border 在圆角上会被切角） */
+.mv-qph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  border-radius:7px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.09);
+  color:rgba(255,255,255,.38);transition:opacity .22s ease}
 .mv-qbadge{position:absolute;left:4px;bottom:4px;font-size:9px;font-weight:700;letter-spacing:.04em;
   padding:1px 4px;border-radius:3px;background:rgba(0,0,0,.6);color:#ffa8c0}
 .mv-qbadge[data-official="1"]{background:rgba(251,114,153,.86);color:#fff}
@@ -222,9 +234,11 @@ const CSS = `
   background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background .14s}
 .mv-srow:hover{background:rgba(255,255,255,.07)}
 .mv-srow[data-current="1"]{background:rgba(251,114,153,.14)}
-.mv-srow-thumb{position:relative;width:76px;height:43px;border-radius:6px;overflow:hidden;flex:none;
-  background:rgba(255,255,255,.06)}
-.mv-srow-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.mv-srow-thumb{position:relative;width:76px;height:43px;border-radius:7px;overflow:hidden;flex:none;
+  background:linear-gradient(135deg,rgba(255,255,255,.10),rgba(255,255,255,.045))}
+.mv-srow-thumb img{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .22s ease}
+.mv-srow-thumb[data-loaded="1"] img{opacity:1}
+.mv-srow-thumb[data-loaded="1"] .mv-qph,.mv-qthumb[data-loaded="1"] .mv-qph{opacity:0}
 .mv-srow-body{min-width:0;flex:1}
 .mv-srow-title{font-size:12px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
   overflow:hidden}
@@ -302,18 +316,12 @@ export default function activate(folium) {
   const log = folium.log;
   const hostMinor = (folium.host && folium.host.folium && folium.host.folium.minor) || 0;
   const supportsSecret = hostMinor >= 7;
+  /** 宿主应用版本（0.8.0 起才有这个字段；老宿主为空）。只用于日志。 */
+  const hostApp = String((folium.host && folium.host.folia) || '');
 
-  /**
-   * 窗口自己的全屏接口 —— 也就是应用右上角那个按钮按的东西。
-   *
-   * `document.requestFullscreen()` 在这个窗口里不生效（宿主把整窗全屏交给了主进程），
-   * 所以走 preload 暴露出来的 `window.electron.toggleFullscreenWindow()`；
-   * 老宿主没有这条通道时再退回 HTML 全屏。
-   */
-  const hostWindow =
-    typeof window !== 'undefined' && window.electron && typeof window.electron === 'object'
-      ? window.electron
-      : null;
+  /* 不使用宿主 preload 的私有通道：它不属于 Folium 公开接口。
+   * 全屏只通过标准的 resize / fullscreenchange 事件跟随（重新给窗口按钮让位），
+   * 不读取也不切换宿主的整窗全屏状态。 */
 
   /* ---------------------------------------------------------------- *
    * 设置
@@ -343,6 +351,16 @@ export default function activate(folium) {
       description: label(
         '按 Folia 的播放队列顺序连播：一支 MV 放完就切到队列里的下一首，MV 跟着换过去。关掉就停在最后一帧。',
         'Follows the queue order: when an MV ends, the next song in the queue starts and its MV loads.',
+      ),
+    },
+    {
+      key: 'inlineButton',
+      type: 'boolean',
+      defaultValue: true,
+      label: label('搜索列表 / 播放器队列里也放 MV 图标', 'MV icon inside song lists'),
+      description: label(
+        '在宿主的搜索结果、以及播放器侧栏「播放列表」的每一行右侧加一个小 MV 图标，点一下直接看这首的 MV（不动当前播放、不切歌）。关掉就只留进度条那个按钮。',
+        'Adds a small MV icon to each search-result and player-queue row, playing that song’s MV without changing the current track.',
       ),
     },
     {
@@ -415,6 +433,7 @@ export default function activate(folium) {
       quality: qualityList.includes(raw.quality) ? raw.quality : 'auto',
       pauseMusic: raw.pauseMusic !== false,
       autoNext: raw.autoNext !== false,
+      inlineButton: raw.inlineButton !== false,
       volume: Number.isFinite(volume) ? clamp(volume, 0, 100) : 90,
     };
   }
@@ -449,12 +468,6 @@ export default function activate(folium) {
     /** 换源抽屉开着没（跟播放列表互斥） */
     sourceOpen: false,
     generation: 0,
-    /** 窗口当前是不是整窗全屏（跟应用右上角那个按钮同一个状态） */
-    windowFullscreen: false,
-    /** 这次全屏是不是我们开的：是的话退出影院时负责退回去 */
-    enteredFullscreen: false,
-    /** 刚进全屏时先忽略一下 mousemove，别让窗口尺寸变化把控制条又弹出来 */
-    fullscreenGraceUntil: 0,
   };
 
   const resolvedCache = new Map(); // songKey → info（同一个视频不重复取流）
@@ -482,23 +495,40 @@ export default function activate(folium) {
     }, 400);
   }
 
+  /* 音量记在 folium.storage（模组自己的数据目录），不写宿主页面的本地存储。
+   * get 是异步的：先同步读缓存，异步读回来后再补一次 applyVolume；用户手动
+   * 调过音量后就不再覆盖。 */
+  let savedVolume = null;
+  let volumePrimed = false;
+  let volumeTouched = false;
+
+  function primeVolume() {
+    if (volumePrimed) return;
+    volumePrimed = true;
+    Promise.resolve(folium.storage.get(VOL_KEY))
+      .then((value) => {
+        if (value === null || value === undefined || value === '') return; // 没存过，别把 null 当成音量 0
+        const n = Number(value);
+        if (Number.isFinite(n) && n >= 0 && n <= 1) {
+          savedVolume = n;
+          if (state.open && !volumeTouched) {
+            state.volume = n;
+            applyVolume();
+          }
+        }
+      })
+      .catch(() => {});
+  }
+
   function loadVolume() {
-    const fallback = settings().volume / 100;
-    try {
-      const saved = Number(window.localStorage.getItem(VOL_KEY));
-      if (Number.isFinite(saved) && saved >= 0 && saved <= 1) return saved;
-    } catch {
-      /* 隐私模式拿不到 localStorage */
-    }
-    return fallback;
+    primeVolume();
+    return savedVolume != null ? savedVolume : settings().volume / 100;
   }
 
   function saveVolume() {
-    try {
-      window.localStorage.setItem(VOL_KEY, String(state.volume));
-    } catch {
-      /* 同上 */
-    }
+    volumeTouched = true;
+    savedVolume = state.volume;
+    Promise.resolve(folium.storage.set(VOL_KEY, state.volume)).catch(() => {});
   }
 
   /* ---------------------------------------------------------------- *
@@ -518,7 +548,61 @@ export default function activate(folium) {
 
   function currentSong() {
     const value = playbackState();
-    return (value && value.song) || null;
+    return mergeHostSong((value && value.song) || null, richCurrentSong());
+  }
+
+  /* ---- 0.8.0 的 song DTO 少了时长 / 封面，从宿主内部那份补齐 ---- */
+
+  /**
+   * 0.8.0 起宿主给模组的 song DTO 只剩 `{ id, title, artist, album, source, ref }`：
+   * 时长、封面、多歌手都不在里面了。挑 MV 时时长是很硬的一条信号（对上了 +22 分），
+   * 队列列表也要靠封面先顶上去，所以这里从宿主内部 store 里把它们补回来。
+   *
+   * 用 `folium.internals.stores`（宿主自己也在用同一份数据），全程 try/catch：
+   * 哪天这个入口没了，最坏就是回到「没有时长、没有封面」，功能不受影响。
+   */
+  function hostPlaybackStore() {
+    try {
+      const stores = folium.internals && folium.internals.stores;
+      const store = stores && stores.playback;
+      if (!store || typeof store.getState !== 'function') return null;
+      const snapshot = store.getState();
+      return snapshot && typeof snapshot === 'object' ? snapshot : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function richCurrentSong() {
+    const snapshot = hostPlaybackStore();
+    return (snapshot && snapshot.currentSong) || null;
+  }
+
+  function richQueue() {
+    const snapshot = hostPlaybackStore();
+    const list = snapshot && snapshot.playQueue;
+    return Array.isArray(list) ? list : null;
+  }
+
+  /** 把完整对象里的时长 / 封面 / 多歌手补到公开 DTO 上；不缺就原样返回同一个对象。 */
+  function mergeHostSong(dto, rich) {
+    if (!dto || !rich) return dto;
+    const cover = (rich.album && typeof rich.album === 'object' && rich.album.coverUrl) || rich.coverUrl || '';
+    const needDuration = songDurationSec(dto) <= 0;
+    const needCover = !dto.coverUrl;
+    const needArtists = !Array.isArray(dto.artists) || !dto.artists.length;
+    if (!needDuration && !needCover && !needArtists) return dto;
+
+    const merged = { ...dto };
+    if (needDuration) {
+      if (rich.durationMs) merged.durationMs = rich.durationMs;
+      else if (rich.duration) merged.duration = rich.duration;
+    }
+    if (needArtists && Array.isArray(rich.artists) && rich.artists.length) merged.artists = rich.artists;
+    if (needCover && cover) merged.coverUrl = cover;
+    const albumName = rich.album && typeof rich.album === 'object' ? rich.album.name : '';
+    if (albumName && !merged.album) merged.album = albumName;
+    return merged;
   }
 
   function pauseHost() {
@@ -793,13 +877,6 @@ export default function activate(folium) {
   qualityWrap.appendChild(qualityMenu);
   controls.appendChild(qualityWrap);
 
-  const btnExpand = document.createElement('button');
-  btnExpand.type = 'button';
-  btnExpand.className = 'mv-btn round';
-  btnExpand.title = '整窗全屏';
-  btnExpand.innerHTML = ICON_EXPAND;
-  controls.appendChild(btnExpand);
-
   bottom.appendChild(controls);
   root.appendChild(bottom);
 
@@ -1054,7 +1131,8 @@ export default function activate(folium) {
   video.addEventListener('pause', () => {
     audio.pause();
     syncPlayIcon();
-    poke(true);
+    // 不是 poke(true)：暂停只是把控件亮出来给人看状态，停手一样要收回去
+    poke();
   });
   video.addEventListener('waiting', () => {
     if (state.phase === 'playing') showLoadingCard('缓冲中…', '网络慢的时候会这样，等一下就好。');
@@ -1103,7 +1181,16 @@ export default function activate(folium) {
       if (!playback || typeof playback.getQueue !== 'function') return null;
       const snap = playback.getQueue({ limit: 100 });
       if (!snap || !Array.isArray(snap.items)) return null;
-      return snap;
+      // 0.8.0 的队列项只剩 { song, index }，时长/封面按 index 回宿主内部队列补齐。
+      const rich = richQueue();
+      if (!rich || rich.length !== snap.length) return snap;
+      const items = snap.items.map((item) => {
+        if (!item || !item.song) return item;
+        const full = Number.isFinite(Number(item.index)) ? rich[Number(item.index)] : null;
+        const merged = mergeHostSong(item.song, full);
+        return merged === item.song ? item : { ...item, song: merged };
+      });
+      return { ...snap, items };
     } catch {
       return null;
     }
@@ -1115,13 +1202,18 @@ export default function activate(folium) {
 
   function applyThumb(row, key) {
     const thumb = thumbOf(key);
-    const img = row.querySelector('img');
+    const box = row.querySelector('.mv-qthumb');
+    const img = box && box.querySelector('img');
     const badge = row.querySelector('.mv-qbadge');
     if (!thumb || !thumb.cover) {
       if (badge) badge.style.display = 'none';
       return;
     }
-    if (img && img.getAttribute('src') !== thumb.cover) img.setAttribute('src', thumb.cover);
+    if (img && img.getAttribute('src') !== thumb.cover) {
+      // 换了地址就重新走一遍「淡入」：旧图先落掉，不然会看到两张图叠着。
+      if (box) box.setAttribute('data-loaded', '0');
+      img.setAttribute('src', thumb.cover);
+    }
     if (badge) {
       badge.style.display = '';
       badge.textContent = thumb.official ? '官方 MV' : 'MV';
@@ -1170,6 +1262,13 @@ export default function activate(folium) {
       .catch(() => {});
   }
 
+  /**
+   * 问一批封面。
+   *
+   * 拆成 3 个一组往后发：main 那边一首歌要搜一次 B 站（几百毫秒），8 首一起问
+   * 就是「等最慢的那首」，界面上什么都出不来。小批走完一批就先贴一批，
+   * 先看见前几行，后面的慢慢补 —— 观感上快很多。
+   */
   async function loadThumbs(pending) {
     const ask = [];
     for (const entry of pending) {
@@ -1180,74 +1279,114 @@ export default function activate(folium) {
     }
     if (!ask.length) return;
 
-    let result = null;
-    try {
-      result = await folium.rpc.call('mvPreview', {
-        items: ask.slice(0, 8).map((entry) => ({
-          key: entry.key,
-          title: entry.title,
-          artist: entry.artist,
-          durationMs: entry.durationMs,
-        })),
-      });
-    } catch (err) {
-      log.info('MV 影院：播放列表缩略图没拿到', String((err && err.message) || err));
-      for (const entry of ask) thumbInFlight.delete(entry.key);
-      return;
-    }
+    for (let start = 0; start < ask.length; start += 3) {
+      const chunk = ask.slice(start, start + 3);
+      let result = null;
+      try {
+        result = await folium.rpc.call('mvPreview', {
+          items: chunk.map((entry) => ({
+            key: entry.key,
+            title: entry.title,
+            artist: entry.artist,
+            durationMs: entry.durationMs,
+          })),
+        });
+      } catch (err) {
+        log.info('MV 影院：播放列表缩略图没拿到', String((err && err.message) || err));
+        for (const entry of chunk) thumbInFlight.delete(entry.key);
+        continue;
+      }
 
-    const rows = Array.isArray(result && result.results) ? result.results : [];
-    for (const item of rows) {
-      if (!item || !item.key) continue;
-      // 没搜到也落一条空记录：这一轮就不再为它反复发请求了。
-      thumbCache.set(item.key, {
-        cover: item.cover || '',
-        official: Number(item.official) || 0,
-        bvid: item.bvid || '',
-      });
+      const rows = Array.isArray(result && result.results) ? result.results : [];
+      for (const item of rows) {
+        if (!item || !item.key) continue;
+        // 没搜到也落一条空记录：这一轮就不再为它反复发请求了。
+        thumbCache.set(item.key, {
+          cover: item.cover || '',
+          official: Number(item.official) || 0,
+          bvid: item.bvid || '',
+        });
+      }
+      for (const entry of chunk) thumbInFlight.delete(entry.key);
+      persistThumbs();
+      // 每回来一批就先贴一批，不等整批
+      refreshThumbsOnScreen();
     }
-    for (const entry of ask) thumbInFlight.delete(entry.key);
 
     // 长会话里别把整张表都留着
     while (thumbCache.size > 300) thumbCache.delete(thumbCache.keys().next().value);
-    persistThumbs();
-    // 只更新还活着的那些行
+  }
+
+  /** 把缓存里已经有的封面贴到还活着的行上（异步回来的图靠它落位）。 */
+  function refreshThumbsOnScreen() {
     for (const row of queueList.querySelectorAll('.mv-qrow')) {
       applyThumb(row, row.getAttribute('data-key') || '');
     }
   }
 
   /**
-   * 预热：进影院 / 换歌时先把队列前几首的封面对下来。
+   * 可视区加载。
    *
-   * 用户真正去点「播放列表」的那一刻，图已经躺在缓存里了，拉开就是有图的列表；
-   * 只预热前 4 首（够铺满一屏），免得一进影院就朝 B 站打一串搜索。
+   * 封面一首歌一次 B 站搜索，整条队列一次性去要又慢又浪费（用户可能只看前五行）。
+   * 所以交给 IntersectionObserver：行滚进可视区（下面多留 180px 预读）才排队，
+   * 攒 90ms 合成一个请求。用户往下滑，就跟着一条条补上来。
    */
-  function warmThumbs() {
-    restoreThumbs();
-    const snap = queueSnapshot();
-    if (!snap) return;
-    const hostIndex = Number.isFinite(snap.currentIndex) ? snap.currentIndex : 0;
-    const currentIndex = Number.isFinite(state.queueIndex) ? state.queueIndex : hostIndex;
-    const currentKey = state.song ? songKey(state.song) : '';
-    const pending = [];
-    for (const item of snap.items) {
-      const song = item && item.song;
-      if (!song) continue;
-      const key = songKey(song);
-      // 列表里当前那一行、以及屏幕上演的那首，封面手上就有，不用去问。
-      if (Number(item.index) === currentIndex) continue;
-      if (currentKey && key === currentKey) continue;
-      if (thumbCache.has(key) || thumbInFlight.has(key)) continue;
-      pending.push({
-        key,
-        title: songTitleOf(song),
-        artist: songArtistOf(song),
-        durationMs: songDurationSec(song) * 1000,
-      });
-      if (pending.length >= 4) break;
+  const rowMeta = new WeakMap(); // 行元素 → { key, title, artist, durationMs }
+  const visibleQueue = new Map(); // key → meta，等着被问
+  let thumbObserver = null;
+  let visibleTimer = 0;
+
+  function scheduleVisible() {
+    if (visibleTimer) return;
+    visibleTimer = window.setTimeout(() => {
+      visibleTimer = 0;
+      if (!visibleQueue.size) return;
+      const batch = [];
+      for (const [key, meta] of visibleQueue) {
+        if (batch.length >= 9) break;
+        visibleQueue.delete(key);
+        batch.push(meta);
+      }
+      void loadThumbs(batch);
+      if (visibleQueue.size) scheduleVisible();
+    }, 90);
+  }
+
+  function ensureThumbObserver() {
+    if (thumbObserver !== null) return;
+    if (typeof IntersectionObserver !== 'function') return; // 老渲染器：退回整批问
+    thumbObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const row = entry.target;
+          thumbObserver.unobserve(row);
+          const meta = rowMeta.get(row);
+          if (!meta) continue;
+          const known = thumbOf(meta.key);
+          if (known && known.cover) {
+            applyThumb(row, meta.key);
+            continue;
+          }
+          visibleQueue.set(meta.key, meta);
+        }
+        scheduleVisible();
+      },
+      { root: queueList, rootMargin: '0px 0px 180px 0px', threshold: 0 },
+    );
+  }
+
+  /** 登记一行：已经在缓存里的直接贴图，没有的挂到观察器上等它滚进来。 */
+  function watchRow(row, meta) {
+    rowMeta.set(row, meta);
+    const known = thumbOf(meta.key);
+    if (known && known.cover) return;
+    if (thumbObserver) {
+      thumbObserver.observe(row);
+      return;
     }
-    void loadThumbs(pending);
+    // 没有 IntersectionObserver（老宿主 / 测试环境）：直接问，别停在那儿不动
+    void loadThumbs([meta]);
   }
 
   /* ---------------------------------------------------------------- *
@@ -1305,8 +1444,14 @@ export default function activate(folium) {
       img.loading = 'lazy';
       img.decoding = 'async';
       img.referrerPolicy = 'no-referrer'; // B 站图床认 Referer，一律不带
+      img.addEventListener('load', () => thumb.setAttribute('data-loaded', '1'));
+      img.addEventListener('error', () => thumb.setAttribute('data-loaded', '0'));
       if (item.cover) img.setAttribute('src', item.cover);
       thumb.appendChild(img);
+      const holder = document.createElement('span');
+      holder.className = 'mv-qph';
+      holder.innerHTML = ICON_FRAME;
+      thumb.appendChild(holder);
       row.appendChild(thumb);
 
       const body = document.createElement('div');
@@ -1412,26 +1557,38 @@ export default function activate(folium) {
       return;
     }
 
-    // 看片期间宿主不动，所以「看到第几首」以 state.queueIndex 为准；
-    // 没在列表里点过，才用宿主自己的 currentIndex。
-    const hostIndex = Number.isFinite(snap.currentIndex) ? snap.currentIndex : 0;
-    const currentIndex = Number.isFinite(state.queueIndex) ? state.queueIndex : hostIndex;
-    const total = Number(snap.length) || snap.items.length;
-    // 整条队列都列出来（当前这首高亮）：点列表不再挪动宿主，往回点几首也该点得到。
-    const items = snap.items.filter((item) => item && item.song).slice(0, 60);
-
-    queueCount.textContent = items.length ? `${currentIndex + 1}/${total}` : '';
-
+    // 正在看的这首未必在宿主队列里：从搜索列表 / 播放器侧栏点 MV 进来时，
+    // 宿主队列还是它自己那张歌单，硬拿它的 currentIndex 去高亮就会标到另一首歌上
+    // （画面上放的是「快点告诉你」，列表却高亮宿主正在放的「晴天」）。
+    // 所以当前项一律按「歌」认；不在队列里，就把它单独置顶成一项。
     const currentKey = state.song ? songKey(state.song) : '';
-    const pending = [];
+    const queueIndex = Number.isFinite(state.queueIndex) ? state.queueIndex : null;
+    // 整条队列都列出来（当前这首高亮）：点列表不再挪动宿主，往回点几首也该点得到。
+    const listed = snap.items.filter((item) => item && item.song).slice(0, 60);
+    const inQueue = Boolean(currentKey) && listed.some((item) => songKey(item.song) === currentKey);
+    const items = currentKey && !inQueue ? [{ song: state.song, index: null }, ...listed] : listed;
+
+    // 只报「这张列表里有多少首」。宿主的 length 可能是几百首的大歌单，而这里最多列 60 首，
+    // 写「48/439」只会让人以为列表丢了东西；完整条数放在 hover 提示里。
+    queueCount.textContent = items.length ? `${items.length} 首` : '';
+    queueCount.title =
+      Number(snap.length) > items.length
+        ? `宿主队列共 ${snap.length} 首，这里列出 ${items.length} 首`
+        : '';
+
+    ensureThumbObserver();
+    let marked = false;
 
     for (const item of items) {
       const song = item.song;
       const key = songKey(song);
-      // 先看内部位置，拿不到再按歌名兜底。
-      const isCurrent = Number.isFinite(currentIndex)
-        ? Number(item.index) === currentIndex
-        : key === currentKey;
+      // 置顶那行没有队列下标 —— 别用 Number(null)（会变成 0，点到队列第一首上去）
+      const index = item.index === null || item.index === undefined ? null : Number(item.index);
+      // 同名同歌手就算当前这首；队列里有重复版本时只标第一处（置顶那行会先占掉）。
+      const isCurrent = currentKey
+        ? key === currentKey && !marked
+        : index !== null && index === queueIndex;
+      if (isCurrent) marked = true;
       // 屏幕上演的那首（state.song）就是它自己：封面手上就有，别再搜一遍。
       const isPlaying = isCurrent || (Boolean(currentKey) && key === currentKey);
 
@@ -1459,11 +1616,19 @@ export default function activate(folium) {
       img.decoding = 'async';
       // B 站图床认 Referer：从别的站点引用会 403，所以一律不带 Referer。
       img.referrerPolicy = 'no-referrer';
+      img.addEventListener('load', () => thumb.setAttribute('data-loaded', '1'));
+      img.addEventListener('error', () => thumb.setAttribute('data-loaded', '0'));
       const cachedThumb = thumbOf(key);
       const cover =
         (cachedThumb && cachedThumb.cover) || song.coverUrl || song.cover || song.picUrl || '';
       if (cover) img.setAttribute('src', cover);
       thumb.appendChild(img);
+
+      // 图还没来（或者根本没有）时不是一块灰：画一个「影厅」的图标，跟界面上其他空态一个调子
+      const holder = document.createElement('span');
+      holder.className = 'mv-qph';
+      holder.innerHTML = ICON_FRAME;
+      thumb.appendChild(holder);
 
       const badge = document.createElement('span');
       badge.className = 'mv-qbadge';
@@ -1492,23 +1657,31 @@ export default function activate(folium) {
       }
 
       if (cachedThumb) applyThumb(row, key);
-      else if (!isPlaying && pending.length < 8) {
-        pending.push({
+
+      row.addEventListener('click', () => {
+        // 置顶那行就是正在看的这首（它不在宿主队列里，没有下标可点）：回到开头
+        if (!Number.isFinite(index)) {
+          seekTo(0);
+          return;
+        }
+        void playQueueRow(index);
+      });
+
+      queueList.appendChild(row);
+
+      // 封面不等列表整批画完才问：行滚进可视区才排队，滑到哪儿问到哪儿。
+      // 正在播的这首手上就有图，不用再搜。
+      if (!isPlaying || !thumbOf(key)) {
+        watchRow(row, {
           key,
           title: songTitleOf(song),
           artist: songArtistOf(song),
           durationMs: seconds * 1000,
         });
       }
-
-      row.addEventListener('click', () => {
-        void playQueueRow(Number(item.index));
-      });
-
-      queueList.appendChild(row);
     }
 
-    void loadThumbs(pending);
+    refreshThumbsOnScreen();
   }
 
   function queueItemAt(index) {
@@ -1913,9 +2086,20 @@ export default function activate(folium) {
     document.addEventListener('keydown', onKey, true);
   }
 
-  function open() {
-    if (state.open) return;
-    const song = currentSong();
+  /**
+   * 进影院。
+   *
+   * `songOverride` 只在「从宿主列表那一行的 MV 图标进来」时给：那个时点这首歌并
+   * 不是宿主的当前曲目（用户只是想看它的 MV），拿宿主的 currentSong 就放错了。
+   */
+  function open(songOverride) {
+    if (state.open) {
+      // 已经开着：换成刚点的那一首，不再走一遍「打开」的流程
+      const next = songOverride || currentSong();
+      if (next && (!state.song || songKey(next) !== songKey(state.song))) followSong(next);
+      return;
+    }
+    const song = songOverride || currentSong();
     if (!song) {
       folium.ui.toast('现在没有正在播放的歌', { durationMs: 1600 });
       return;
@@ -1929,23 +2113,14 @@ export default function activate(folium) {
     state.candidates = [];
     state.keyword = '';
     state.queueIndex = null;
-    state.enteredFullscreen = false;
-    state.fullscreenGraceUntil = 0;
     setQueueOpen(false);
     setSourceOpen(false);
-
-    // 进来之前窗口可能已经是全屏了（用户自己按的右上角那个按钮）：只读一下，不接管。
-    void readHostFullscreen().then((on) => {
-      if (!state.open) return;
-      state.windowFullscreen = on;
-      root.setAttribute('data-fs', on ? '1' : '0');
-    });
+    // 抽屉标题栏要让开宿主右上角那簇窗口按钮：进来时量一次
+    syncWindowChrome();
 
     kickoff();
-    syncChromeTop(); // 先量一下窗口右上角那簇按钮多高，抽屉好让开
     if (settings().pauseMusic) pauseHost();
     applyVolume();
-    warmThumbs(); // 队列前几首的封面在后台先拿，等用户点开列表时不用再等
 
     const cached = resolvedCache.get(songKey(song));
     if (cached) {
@@ -1976,7 +2151,6 @@ export default function activate(folium) {
     if (settings().pauseMusic) pauseHost();
     applyVolume();
     renderQueue();
-    warmThumbs(); // 下一首的封面顺手先备着，播放列表拉开就是有图的
 
     const cached = resolvedCache.get(songKey(song));
     if (cached) {
@@ -2054,118 +2228,46 @@ export default function activate(folium) {
     if (watched !== null && resume) syncHostTo(watched);
     else if (resume) resumeHost();
     else state.pausedHost = false;
-
-    root.removeAttribute('data-fs');
-    if (state.enteredFullscreen) {
-      state.enteredFullscreen = false;
-      state.windowFullscreen = false;
-      try {
-        if (hostWindow && typeof hostWindow.toggleFullscreenWindow === 'function') {
-          void hostWindow.toggleFullscreenWindow(); // 退出影院时把窗口全屏还回去
-        } else if (document.fullscreenElement) {
-          void document.exitFullscreen();
-        }
-      } catch {
-        /* 宿主不给退就算了 */
-      }
-    }
   }
 
-  /* ---- 整窗全屏 ---- */
+  /* ---- 头顶让位：宿主窗口按钮那一簇有多高 ---- */
 
   /**
-   * 量出「右上角那簇窗口按钮」占了多高。
+   * 宿主把窗口按钮（上一首 / 播放 / 下一首 / 远程控制 / 全屏）浮在窗口右上角，
+   * 顶栏本身是一条整宽的 h-8 遮罩。播放列表与换源的标题栏原来从窗口顶边开始画，
+   * 正好压在这簇按钮底下：叉号点不到，「播放列表」也看不清。
    *
-   * 宿主是自绘标题栏，全屏 / 最小化 / 关闭那几个按钮浮在页面右上角，和我们的抽屉
-   * 抢同一块地方。它们的高度会随版本和平台变，写死像素迟早对不齐，所以直接扫一遍
-   * 贴在顶边、靠右边的按钮，取最下面那条边，抽屉从那下面开始画。
-   * 找不到（结构变了、或者按钮压根不渲染）就退回 CSS 里的保守值。
+   * 这里量一次这一簇的底边（找不到就用顶栏那 32px），只把标题栏的内容往下让，
+   * 抽屉的黑色背景仍然通顶 —— 视觉上还是整块，只是不再和窗口按钮打架。
    */
-  function measureChromeTop() {
-    let bottom = 0;
+  function measureWindowChrome() {
+    let bottom = 32; // 宿主顶栏是 h-8
     try {
       const width = window.innerWidth;
       for (const node of document.querySelectorAll('button')) {
         if (root.contains(node)) continue; // 只找宿主的，别把自己的按钮算进去
         const rect = node.getBoundingClientRect();
         if (!rect.width || !rect.height) continue;
-        if (rect.top > 10) continue; // 贴着顶边
-        if (rect.right < width - 300) continue; // 靠右边那一簇
+        if (rect.top > 12) continue; // 贴着顶边
+        if (rect.right < width - 320) continue; // 靠右边那一簇
         bottom = Math.max(bottom, rect.bottom);
       }
     } catch {
-      /* 量不到就用兜底值 */
+      /* 量不到就按顶栏高度来 */
     }
-    return bottom > 16 ? Math.round(bottom) + 8 : 52;
+    return Math.round(bottom) + 8;
   }
 
-  /** 把量到的值写给 CSS（抽屉的 top 用它）。整窗全屏时没有那排按钮，归零。 */
-  function syncChromeTop() {
-    const value = state.windowFullscreen ? 0 : measureChromeTop();
-    root.style.setProperty('--mv-chrome-top', `${value}px`);
-  }
-
-  /** 窗口现在是不是全屏：优先问主进程，问不到再看 HTML 全屏。 */
-  async function readHostFullscreen() {
-    try {
-      if (hostWindow && typeof hostWindow.isWindowFullscreen === 'function') {
-        return Boolean(await hostWindow.isWindowFullscreen());
-      }
-    } catch {
-      /* 老宿主没有这个接口 */
-    }
-    return Boolean(document.fullscreenElement);
+  function syncWindowChrome() {
+    root.style.setProperty('--mv-chrome-top', `${measureWindowChrome()}px`);
   }
 
   /**
-   * 全屏的样子就是「只剩画面」：一进全屏立刻把标题条和控制条收起来，
-   * 之后跟平时一样，动鼠标才出来、停手 3 秒再收回去。
+   * 标准的 fullscreenchange：页面进入/退出 HTML 全屏时，窗口按钮那一簇的位置
+   * 会变，重新量一次让位高度。不碰宿主 preload 的私有通道。
    */
-  function applyFullscreenChrome() {
-    root.setAttribute('data-fs', state.windowFullscreen ? '1' : '0');
-    syncChromeTop();
-    if (!state.windowFullscreen) return;
-    state.fullscreenGraceUntil = Date.now() + 600;
-    if (video.paused) return; // 暂停时控件本来就在，别收
-    root.setAttribute('data-idle', '1');
-    if (hideTimer) {
-      clearTimeout(hideTimer);
-      hideTimer = 0;
-    }
-  }
-
-  /** 进 / 退整窗全屏。返回切换后的状态。 */
-  async function toggleWindowFullscreen() {
-    const before = state.windowFullscreen;
-    let next = !before;
-    try {
-      if (hostWindow && typeof hostWindow.toggleFullscreenWindow === 'function') {
-        const result = await hostWindow.toggleFullscreenWindow();
-        next = typeof result === 'boolean' ? result : await readHostFullscreen();
-      } else if (document.fullscreenElement) {
-        await document.exitFullscreen();
-        next = false;
-      } else {
-        await document.documentElement.requestFullscreen();
-        next = true;
-      }
-    } catch (err) {
-      log.info('MV 影院：整窗全屏切换失败', String((err && err.message) || err));
-      folium.ui.toast('这个窗口不支持整窗全屏', { durationMs: 1800 });
-      return state.windowFullscreen;
-    }
-    state.windowFullscreen = next;
-    // 我们自己开的才负责退：进来之前就已经是全屏的话，退出影院时不管它。
-    if (!before && next) state.enteredFullscreen = true;
-    if (before && !next) state.enteredFullscreen = false;
-    applyFullscreenChrome();
-    return next;
-  }
-
-  /** 退出影院 / 按 Esc 时把全屏还回去（只还我们开的那次）。 */
-  function releaseFullscreen() {
-    if (!state.windowFullscreen) return;
-    void toggleWindowFullscreen();
+  function onFullscreenChange() {
+    syncWindowChrome();
   }
 
   /* ---- 控件自动隐藏 ---- */
@@ -2176,27 +2278,30 @@ export default function activate(folium) {
       clearTimeout(hideTimer);
       hideTimer = 0;
     }
+    // 暂停时也要收：以前只在播放中收，暂停后进度条/音量就永远挂在那儿，
+    // 想好好看一帧画面的时候很碍事。拖动进度条时不收，不然松手前就没了。
     const shouldHide =
       state.open &&
       state.phase === 'playing' &&
-      !video.paused &&
       !force &&
+      !state.dragging &&
       !state.queueOpen &&
       !state.sourceOpen;
     if (!shouldHide) return;
     hideTimer = window.setTimeout(() => {
       hideTimer = 0;
-      if (state.open && !video.paused && !state.queueOpen && !state.sourceOpen) {
+      if (state.open && !state.dragging && !state.queueOpen && !state.sourceOpen) {
         root.setAttribute('data-idle', '1');
       }
     }, 2800);
   }
 
-  root.addEventListener('mousemove', () => {
-    if (Date.now() < state.fullscreenGraceUntil) return;
-    poke();
-  });
+  root.addEventListener('mousemove', () => poke());
   root.addEventListener('pointerdown', () => poke());
+  // 窗口大小一变（含应用自带的整窗全屏），窗口按钮那一簇的位置/高度就可能变：重量一次
+  window.addEventListener('resize', syncWindowChrome);
+  // HTML 全屏切换也是标准事件，同样重新让位；不订阅宿主 preload 的私有通道
+  document.addEventListener('fullscreenchange', onFullscreenChange);
 
   /* ---- 键盘 ---- */
 
@@ -2208,12 +2313,6 @@ export default function activate(folium) {
     const typing = tag === 'INPUT' || tag === 'TEXTAREA';
 
     if (event.key === 'Escape') {
-      if (state.windowFullscreen) {
-        releaseFullscreen(); // 全屏时先退全屏，再按一次才关影院
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
       if (typing) {
         event.target.blur();
         return;
@@ -2351,10 +2450,6 @@ export default function activate(folium) {
   }
   document.addEventListener('click', onDocumentClick);
 
-  btnExpand.addEventListener('click', () => {
-    void toggleWindowFullscreen();
-  });
-
   btnLink.addEventListener('click', () => {
     const url = (state.info && state.info.url) || '';
     if (!url) return;
@@ -2385,6 +2480,212 @@ export default function activate(folium) {
   });
 
   btnExitErr.addEventListener('click', () => close());
+
+  /* ---------------------------------------------------------------- *
+   * 宿主歌曲列表里的 MV 图标
+   *
+   * 宿主没给模组留「行级按钮」的接口，所以这里只做一件很窄的事：认准两类歌曲行
+   * （搜索结果 .search-row / 播放器侧栏「播放列表」标签页里的虚拟队列行），在行内
+   * 已有的操作图标旁边插一个自己的；点的时候**不碰宿主播放**（不 playSong、不切歌），
+   * 直接拿行上的歌名 / 歌手去找 MV。
+   *
+   * 代价是依赖宿主的类名：哪天宿主改版，最坏的结果是按钮不再出现，
+   * 不会把列表点坏，也不会挡住宿主自己的按钮。
+   * ---------------------------------------------------------------- */
+
+  const ROW_FLAG = 'data-mv-row';
+  const ROW_KEY = 'data-mv-song';
+  let rowObserver = null;
+  let rowTimer = 0;
+
+  function inlineOn() {
+    return settings().inlineButton;
+  }
+
+  function rowTextOf(row, selector) {
+    const node = row.querySelector(selector);
+    return node ? String(node.textContent || '').trim() : '';
+  }
+
+  /** 搜索结果行：封面按钮后面那一格是文本区，行尾还有 mm:ss。 */
+  function songFromSearchRow(row) {
+    // 封面按钮后面那一格就是文本区；宿主改版找不到就往下退一层
+    const body = row.querySelector('.search-row-cover + div') || row.querySelector('.min-w-0.flex-1');
+    if (!body) return null;
+    const title = String((body.querySelector('button span') || body.querySelector('button') || {}).textContent || '').trim();
+    if (!title) return null;
+    const meta = body.children[1] || null;
+    const artist = meta ? String((meta.querySelector('button') || {}).textContent || '').trim() : '';
+    const clock = /^(\d{1,2}):(\d{2})$/.exec(rowTextOf(row, '.font-mono'));
+    return {
+      title,
+      artists: artist ? [{ name: artist }] : [],
+      duration: clock ? Number(clock[1]) * 60 + Number(clock[2]) : 0,
+    };
+  }
+
+  /** 播放器侧栏「播放列表」：react-window 的队列行，行上带着队列下标。 */
+  function songFromPanelRow(row) {
+    const body = row.querySelector('.min-w-0.flex-1');
+    if (!body || body.children.length < 2) return null;
+    const title = String(
+      (body.children[0].querySelector('span.truncate') || body.children[0]).textContent || '',
+    ).trim();
+    if (!title) return null;
+    const artist = String(body.children[1].textContent || '').trim();
+
+    // 行上有 data-react-window-index：能取回宿主队列里的完整 song（时长 / 多歌手都在），
+    // 比行上那两行文本更准；取不到就退回纯文本。
+    const idx = Number(row.getAttribute('data-react-window-index'));
+    const rich = Number.isFinite(idx) ? richQueue() : null;
+    const richSong = rich && rich[idx];
+    if (richSong && String(richSong.name || richSong.title || '').trim() === title) return richSong;
+    const snap = queueSnapshot();
+    const item = Number.isFinite(idx) && snap
+      ? snap.items.find((it) => it && Number(it.index) === idx)
+      : null;
+    if (item && item.song && songTitleOf(item.song) === title) return item.song;
+    return {
+      title,
+      artists: artist ? [{ name: artist.split(/\s*\/\s*/)[0] }] : [],
+      duration: 0,
+    };
+  }
+
+  /** 两处列表各自的「认行 / 读歌 / 插哪 / 多大」；加新列表只要加一项。 */
+  const ROW_KINDS = [
+    {
+      selector: '.search-row',
+      parse: songFromSearchRow,
+      size: 34,
+      round: true,
+      insert(row, btn) {
+        // 插在宿主自己的操作图标前面，跟它们排成一组
+        const action = row.querySelector('.search-row-action');
+        if (action && action.parentElement === row) row.insertBefore(btn, action);
+        else row.appendChild(btn);
+      },
+    },
+    {
+      // 侧栏面板里虚拟列表的队列行：这两枚属性是宿主自己写的，比长串 class 稳
+      selector: '.dock-companion--panel-surface [data-active][data-react-window-index]',
+      parse: songFromPanelRow,
+      size: 28,
+      round: false,
+      insert(row, btn) {
+        // 宿主那三颗图标是 hover 才展开的容器，塞进去平时就看不见了；
+        // 挂在行尾当常驻的一格，hover 时正好排在它们后面。
+        row.appendChild(btn);
+      },
+    },
+  ];
+
+  function makeRowButton(song, kind) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'mv-row-btn';
+    btn.title = `看《${songTitleOf(song)}》的 MV`;
+    btn.setAttribute('aria-label', btn.title);
+    btn.innerHTML = ICON_MV_ROW;
+    const icon = btn.querySelector('svg');
+    if (icon) {
+      const n = kind.round ? 16 : 15;
+      icon.setAttribute('width', String(n));
+      icon.setAttribute('height', String(n));
+    }
+    // 搜索行是 34×34 的圆形图标，播放器侧栏是 28×28 的圆角小方钮：各照各的来
+    btn.style.cssText =
+      `display:flex;align-items:center;justify-content:center;width:${kind.size}px;` +
+      `height:${kind.size}px;flex:none;padding:0;border:0;` +
+      `border-radius:${kind.round ? '999px' : '8px'};background:transparent;color:inherit;` +
+      'opacity:.42;cursor:pointer;transition:opacity .15s,background .15s';
+    btn.addEventListener('mouseenter', () => {
+      btn.style.opacity = '1';
+      btn.style.background = 'rgba(127,127,127,.16)';
+    });
+    btn.addEventListener('mouseleave', () => {
+      btn.style.opacity = '.42';
+      btn.style.background = 'transparent';
+    });
+    btn.addEventListener('click', (event) => {
+      // 行本身是「播放这首」：点图标不能顺手把歌切了
+      event.preventDefault();
+      event.stopPropagation();
+      open(song);
+    });
+    return btn;
+  }
+
+  function decorateRow(row, kind) {
+    let song = null;
+    try {
+      song = kind.parse(row);
+    } catch {
+      return;
+    }
+    if (!song) return;
+    // 虚拟列表会复用同一个 DOM 节点装下一首歌：标记里记下歌的 key，换了就重挂
+    const key = songKey(song);
+    if (row.getAttribute(ROW_FLAG) === '1' && row.getAttribute(ROW_KEY) === key) return;
+    const stale = row.querySelector('.mv-row-btn');
+    if (stale) stale.remove();
+    row.setAttribute(ROW_FLAG, '1');
+    row.setAttribute(ROW_KEY, key);
+    kind.insert(row, makeRowButton(song, kind));
+  }
+
+  function scanRows() {
+    rowTimer = 0;
+    if (!inlineOn()) return;
+    try {
+      for (const kind of ROW_KINDS) {
+        for (const row of document.querySelectorAll(kind.selector)) decorateRow(row, kind);
+      }
+    } catch {
+      /* 宿主结构变了就安静退出，别在别人的列表里抛错 */
+    }
+  }
+
+  function scheduleRows() {
+    if (rowTimer) return;
+    rowTimer = window.setTimeout(scanRows, 150);
+  }
+
+  /** 设置开关一变：要么把图标补上，要么把挂上去的都收回来。 */
+  function syncInlineRows() {
+    if (!inlineOn()) {
+      if (rowObserver) {
+        rowObserver.disconnect();
+        rowObserver = null;
+      }
+      for (const row of document.querySelectorAll(`[${ROW_FLAG}]`)) {
+        row.removeAttribute(ROW_FLAG);
+        row.removeAttribute(ROW_KEY);
+      }
+      for (const btn of document.querySelectorAll('.mv-row-btn')) btn.remove();
+      return;
+    }
+    if (!rowObserver && typeof MutationObserver === 'function') {
+      // 两处列表都是会翻页 / 虚拟滚动的：订阅整棵树的子节点变化，攒 150ms 扫一次就够
+      rowObserver = new MutationObserver(scheduleRows);
+      rowObserver.observe(document.body, { childList: true, subtree: true });
+    }
+    scheduleRows();
+  }
+
+  try {
+    const holder = section && (section.params || section.settings);
+    if (holder && typeof holder.subscribe === 'function') {
+      holder.subscribe(() => syncInlineRows());
+    }
+  } catch {
+    /* 老宿主没有订阅：下次列表变化时会按新设置重扫 */
+  }
+  syncInlineRows();
+
+  log.info(
+    `MV 影院：客户端就绪（Folia ${hostApp || '未知'} / 模组 API 1.${hostMinor}）`,
+  );
 
   /* ---------------------------------------------------------------- *
    * 注册
@@ -2520,27 +2821,6 @@ export default function activate(folium) {
   subscribe('account.changed', () => {
     resolvedCache.clear();
   });
-
-  // 用户自己按了窗口右上角的全屏按钮（或 ⌃⌘F）：MV 页也跟着把标题与控制条收起来。
-  try {
-    if (hostWindow && typeof hostWindow.onWindowFullscreenChanged === 'function') {
-      const off = hostWindow.onWindowFullscreenChanged((on) => {
-        state.windowFullscreen = Boolean(on);
-        if (!on) state.enteredFullscreen = false;
-        applyFullscreenChrome();
-      });
-      if (typeof off === 'function') unsubscribers.push(off);
-    }
-  } catch {
-    /* 老宿主没有这条事件 */
-  }
-
-  // 窗口尺寸 / 缩放一变，右上角那簇按钮的位置也跟着变：抽屉起点重新量一次。
-  const onWindowResize = () => {
-    if (state.open) syncChromeTop();
-  };
-  window.addEventListener('resize', onWindowResize);
-  unsubscribers.push(() => window.removeEventListener('resize', onWindowResize));
 
   /* ---- 命令面板 ---- */
 
@@ -2777,10 +3057,11 @@ export default function activate(folium) {
     show();
   }
 
+
+
   /* ---------------------------------------------------------------- *
    * 退出
    * ---------------------------------------------------------------- */
-
   return () => {
     close(false);
     document.removeEventListener('click', onDocumentClick);
@@ -2809,6 +3090,15 @@ export default function activate(folium) {
       /* ignore */
     }
     if (loginUi) loginUi.dispose();
+    if (rowObserver) rowObserver.disconnect();
+    if (rowTimer) clearTimeout(rowTimer);
+    window.removeEventListener('resize', syncWindowChrome);
+    document.removeEventListener('fullscreenchange', onFullscreenChange);
+    for (const btn of document.querySelectorAll('.mv-row-btn')) btn.remove();
+    for (const row of document.querySelectorAll(`[${ROW_FLAG}]`)) {
+      row.removeAttribute(ROW_FLAG);
+      row.removeAttribute(ROW_KEY);
+    }
     if (pinnedSaveTimer) clearTimeout(pinnedSaveTimer);
     stopSync();
     resolvedCache.clear();

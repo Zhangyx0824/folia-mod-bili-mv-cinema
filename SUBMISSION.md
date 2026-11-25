@@ -1,26 +1,52 @@
 # 上架记录 · MV 影院 bili-mv-cinema
 
-## 当前状态（v1.4.0）
+## 当前状态（v1.6.0）
 
 | 项 | 状态 |
 |---|---|
-| 版本 | **1.4.0**（未提交） |
+| 版本 | **v1.6.0**（审核整改 + 合并 v1.4.0 / v1.5.0 / v1.5.1 的全部更新，一次性重提） |
 | 代码 | `bili-mv-cinema/` · `node test/smoke.mjs` + `node test/unit.mjs` 全绿 |
 | 预览图 | `bili-mv-cinema/preview.jpg`（真 B 站 MV 帧 + 模组真实 DOM 截图，`node test/build_preview.mjs` 可复现） |
-| 仓库 | 待建：`git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git` |
-| 剩下的事 | push `main` + tag `v1.4.0` → 提上架 issue |
+| 仓库 | `git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git` |
+| 剩下的事 | push `main` + tag `v1.6.0` → 把上架 issue 的「版本」改成 `v1.6.0`，机器人重新检查 |
+
+### v1.6.0 改了什么（对应审核意见）
+
+- **必须改 · 移除宿主 preload 私有接口**：整窗全屏按钮原来调 `toggleFullscreenWindow` / 读 `isWindowFullscreen` / 订阅 `onWindowFullscreenChanged`，这些是 Folia 给自己界面用的内部通道，不属于 Folium 公开接口。按审核给的 fallback（代码注释里已真机记录 `document.requestFullscreen()` 在该窗口不生效）**去掉了整窗全屏按钮**，相关状态机与 Esc「先退全屏」一并移除；整窗全屏交给应用右上角自带的按钮。模组现在只用**公开**的标准事件 `resize` / `fullscreenchange` 跟随窗口变化，让抽屉标题栏继续给右上角那簇窗口按钮让位（黑色底色仍然通顶，之前要求的让位效果不变）。全仓库 `bili-mv-cinema/` 已无 `window.electron` 及那三个方法的调用。
+- **必须改 · 音量与说明对齐**：说明写的是用 `folium.storage` 记音量，代码原来却写宿主页面的本地存储。现在 `loadVolume` / `saveVolume` 改走 `folium.storage`（`filesystem.data` 已声明）：`get` 是异步的，用同步缓存 + 读回后补一次 `applyVolume`，不会把「没存过」误判成音量 0，也不会覆盖用户手动调过的音量。
+- **建议 · 作者署名**：`mod.json` 的 `author: pomepii` 与提交账号 `Zhangyx0824` 是同一个人，已在 README 开头说明。
+- **建议 · 与已收录模组区分**：README 开头、`mod.json` 描述、issue 正文都补了一句「全屏影院 vs 常驻小窗」，说明和 `bili-mv-window` 的差别；本文件第二节另有完整对比表。
+- 已准备好向 folia-major 提的需求文案（见第五节）：请宿主在 `folium.ui` 下开放公开的整窗全屏接口，接口可用后再把这个按钮接回来。
+- 测试：冒烟测试删掉宿主全屏通道的 mock，新增「源码不含私有接口」「控制条没有整窗全屏按钮」「音量写进 `folium.storage`」三组断言。
+
+### v1.5.1 修了什么
+
+- **播放列表把「正在看的这首」和「宿主队列」混为一谈**（用户报的「MV 名字和列表里的不是同一首」）：从搜索列表点 MV 进来时，这首歌不在宿主队列里，列表却按宿主 `currentIndex` 去高亮，于是画面放《快点告诉你》、列表高亮宿主正在放的《晴天》。现在当前项按「歌名 + 歌手」认；不在队列里就把正在看的这首**单独置顶**成一项（点击回到开头），宿主队列其余行不再被误标。
+- **标题「48/439」**：439 是宿主全队列长度，而列表最多列 60 首，看着像丢了几百首。改成只报列表实际条数（如「61 首」），完整条数放进 hover 提示（「宿主队列共 438 首，这里列出 61 首」）。
+- 顺手修掉置顶行的假下标：`Number(null) === 0` 会让点击置顶行变成播队列第一首；现在显式区分「没有队列下标」。
+- 测试：新增冒烟场景 8（搜索进来的歌不在队列里 → 置顶 + 计数无斜杠 + 点置顶行不切队列）；主路径里「当前这首要标出来」的断言原来固化了错误行为（高亮第 0 行），改成跟随屏幕上演的那首。
+
+### v1.5.0 改了什么
+
+- **适配 Folia 0.8.0（模组 API 1.10）**：0.8.0 起宿主给模组的 song DTO 只剩 `{id,title,artist,album,source,ref}` —— 时长、封面、多歌手都不在里面了。挑 MV 时时长是很硬的一条信号（对上了 +22 分），队列列表也要靠封面先顶上去：现在从 `folium.internals.stores.playback` 把 `durationMs` / `album.coverUrl` / `artists` 补回公开 DTO（`mergeHostSong`），拿不到时静默退回只有歌名+歌手。`mod.json` 的 `folia` 下界提到 `>=0.8.0`，启动日志会打出宿主版本。
+- **抽屉标题栏让开窗口按钮**：上一版把整个抽屉往下移，太难看；这一版改回「黑色底色通顶」，只把标题栏的内容（「播放列表」/ 准星 / 叉号，换源抽屉同理）用 `padding-top: var(--mv-chrome-top)` 往下让 —— 值在打开影院 / 切换全屏 / 窗口 resize 时量一次（宿主右上角那簇浮层按钮的底边 + 8px，量不到按顶栏 h-8 的 32px + 8px）。
+- **暂停时控件也自动隐藏**：以前只在播放中才收，暂停后进度条 / 音量永远挂着，想干净看一帧画面很碍事。现在暂停后停手 2.8 秒同样收起，动鼠标或点画面回来；拖动进度条时不收。
+- 测试：新增「0.8.0 DTO」场景（时长 / 封面从宿主内部队列补齐、`--mv-chrome-top` 兜底 40px），主路径补「暂停后 data-idle 要置 1」。
 
 ### v1.4.0 改了什么
 
 - **换源**：控制条「列表」旁边多一个「换源」（`S`）。抽屉里列同一首歌的其他 MV 投稿（封面 / UP 主 / 时长 / 匹配分，正在看的那支标「正在看」），点一支就按 bvid 直接换过去；也能自己搜别的关键词。挑中的按这首歌记住，下次优先用。参考 `bili-mv-window` 的候选选择，但摆在播放器自己的抽屉里，不弹独立窗口。
 - **定位到当前**：播放列表标题栏加准星按钮，一点滚到正在看的那首并闪一下；打开列表时也自动落在那一行。
 - **分P取正片、十几秒片段不参与挑选**：`view` 接口的 `data.cid` 只指向 P1，音乐区很多投稿的 P1 是十几秒预告、P2 才是整支 MV，照着 P1 取流就是「点进去十几秒就结束」。现在有 `pages` 时取时长最长的那一 P；整支都不足 20 秒的（预告 / 切片 / 试听）排序时整批沉底、取流时直接跳过，第一名取不到流就顺着候选往下试（最多 4 个），不再因为第一名是个片段就整次失败。候选里这类投稿会标「片段」。
-- **播放列表让开窗口按钮**：抽屉不再贴着窗口顶边 —— 标题栏（播放列表 / 准星 / 叉号）原来和宿主右上角的全屏、最小化、关闭叠在一起。现在运行时量一遍那簇按钮的高度（右上角、贴顶边那些 `button` 的最低边 + 8px），抽屉从那下面开始画；整窗全屏时没有那排按钮，自动归零。窗口尺寸变化会重新量。
+- **播放列表回到通顶**：上一版让抽屉给右上角窗口按钮让位（`--mv-chrome-top`），实测把标题栏挤到一条缝里，观感很差。这一版撤掉运行时测量，抽屉重新通顶；右上角那簇按钮偶尔叠在叉号上，可接受。
+- **封面改为可视区按需加载**：不再「拉开列表就搜一整条队列」，改成滚动到可视区附近（`IntersectionObserver`，下方预留一屏）才搜那一首的封面，一次只发 3 首、回来一批贴一批；还没轮到的行显示胶片格占位图标（内阴影描边，圆角不被切掉），图到了淡入。
+- **宿主列表里的 MV 图标**：搜索结果与播放器侧栏「播放列表」的每一行右侧多一个 MV 小图标，点了就地看这首的 MV，不动宿主播放、不切歌；侧栏那处用行上的 `data-react-window-index` 从宿主队列把时长/歌手补齐，虚拟列表复用行元素时按歌名 key 重挂。设置里可关（`inlineButton`）。
 - **封面加载提速**：封面地址改成 B 站图床的缩略图（`@176w_100h_1c.webp`，78×44 的格子刚好 2 倍屏），体积小一个数量级；「歌 → 封面」落盘缓存，下次打开直接有图；进影院 / 换歌时先预取队列前 4 首（跳过正在播的那首），拉开列表时不用再等一轮搜索；主进程并发从 3 提到 4；`<img decoding="async">`。
 
 ### v1.3.0 改了什么
 
 - **整窗全屏修好了**：原来调 `root.requestFullscreen()` 在这个窗口里不生效（宿主把整窗全屏交给了主进程）。现在改用 preload 暴露的 `window.electron.toggleFullscreenWindow()`，也就是应用右上角那个全屏按钮；进全屏立刻收起标题与控制条，`Esc` 先退全屏、再按一次退出，退出影院时把全屏还回去。
+  - ⚠️ **这条做法已在 v1.6.0 撤销**：审核指出 `window.electron` 是宿主私有接口，不属于 Folium 公开接口。v1.6.0 去掉了这个按钮与整条私有通道，整窗全屏交回应用右上角自带的按钮（详见「v1.6.0 改了什么」）。此处仅保留历史记录。
 - **点画面即播放/暂停**：以前只有左下角按钮和空格能控制。
 - **删掉歌词与弹幕**：全屏页不再叠歌词行、不再拉 B 站弹幕、也没有发弹幕的入口和设置项；控制条与设置面板只留「看 MV 本身」需要的东西。主进程里对应的接口（弹幕 XML、发弹幕）一并删除，模组回到纯只读。
 - **点播放列表不再跳走**：宿主的 `playQueueItem` / `playSong` 会顺手打开它自己的播放页，把 MV 页顶掉 —— 这就是「点了列表里的某一支 MV，却跳去歌曲播放界面」的原因。现在点一行**就地取流播放**（用这一行已搜到的 bvid，不重搜、不动宿主）；退出影院时才把宿主队列补到那一首，音乐从那首接着放。
@@ -35,9 +61,11 @@
 
 - **名称**：MV 影院（MV Cinema）
 - **id**：`bili-mv-cinema`
-- **一句话**：播放栏的 MV 按钮点开就是全屏 MV，带原声，像 QQ 音乐。
+- **一句话**：播放栏的 MV 按钮点开就是全屏 MV，带原声，像 QQ 音乐。和已收录的 `bili-mv-window`（常驻小窗、静音画面）不同，这里是不常驻的「全屏影院」：点开才出现、带 B 站原声、退出即卸流。
+- **作者**：`mod.json` 的 `pomepii` 就是提交 / 维护账号 `Zhangyx0824`，同一人，README 里也写了。
 - **权限**：`stageLayers`、`playback.control`、`filesystem.data`
 - **网络**：直接请求 `api.bilibili.com` / `passport.bilibili.com`，所有请求在主进程发出（渲染进程不跨域）；视频流经本地 `127.0.0.1` 只读代理补 `Referer`。
+- **合规**：不调用宿主 preload 的私有通道，只用 Folium 公开 registries / API 与标准 DOM 事件；音量、挑片记录、封面缓存一律走 `folium.storage`，Cookie 走 `folium.secrets`。
 
 ## 二、和已有 `bili-mv-window` 的区别（给审核看的）
 
@@ -52,29 +80,29 @@
 
 ## 三、提交步骤
 
-1. 在 GitHub 手动建空仓 `folia-mod-bili-mv-cinema`（GitHub MCP 无建仓权限）。
-2. 本地：
+仓库与远端已存在（`origin` = `git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git`），重提只需：
 
-   ```bash
-   cd ~/folia-mod-bili-mv-cinema
-   git init && git add -A
-   git commit -m "feat: MV 影院 v1.4.0 — 换源 + 定位到当前"
-   git tag v1.4.0
-   git branch -M main
-   git remote add origin git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git
-   git push -u origin main --tags
-   ```
+```bash
+cd ~/folia-mod-bili-mv-cinema
+git add -A
+git commit -m "fix: v1.6.0 — 移除宿主私有全屏通道、音量改存 folium.storage（审核整改）"
+git tag v1.6.0
+git push origin main
+git push origin v1.6.0
+```
 
-3. 到 folium-compound 仓库开「新模组收录」issue，字段：
-
-   - `mod-id`: `bili-mv-cinema`
-   - `repo`: `Zhangyx0824/folia-mod-bili-mv-cinema`
-   - `ref`: `v1.4.0`
-   - 简介与截图用上面的自述 + `preview.jpg`
-
-   审核 CI 会给通过的版本打 `signed` 标签，随后出现在模组市场。
+然后到 folium-compound 的收录 issue（#192）把正文「版本 / Version (tag or commit)」字段改成 `v1.6.0`，机器人会重新检查，维护者再审一次。
 
 ## 四、后续可做
 
 - 记住每首歌上次挑的候选已经在做了（`folium.storage` 的 `pinned`）。
 - 倍速播放（`video.playbackRate`）——需要先确认音频轨同步是否还稳。
+- 等宿主开放公开的整窗全屏接口后，把控制条上的全屏按钮接回来。
+
+## 五、给 folia-major 的需求文案（去掉按钮后按审核建议提交）
+
+> 标题：[Feature] 请开放公开的整窗全屏接口（folium.ui）
+>
+> 背景：Folia 把整窗全屏放在主进程，preload 暴露的内部通道不属于 Folium 模组接口，模组直接调用会在收录审查中被拒；而 `document.documentElement.requestFullscreen()` 在这个窗口实测不生效，所以 MV 影院（bili-mv-cinema v1.6.0）已移除自己的全屏按钮，只能让用户去点应用右上角那个。
+>
+> 期望：在 `folium.ui` 下提供公开接口，例如 `folium.ui.setWindowFullscreen(boolean)` / `folium.ui.isWindowFullscreen()` / `folium.ui.onWindowFullscreenChanged(cb)`，并把对应的 `ui.windowFullscreen` 权限纳入 manifest 白名单。这样模组可以在自己的全屏页里正确进 / 退整窗全屏、同步窗口按钮位置，不必再碰内部通道。

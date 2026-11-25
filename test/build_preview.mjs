@@ -334,8 +334,8 @@ times[0].textContent = '1:29';
 times[1].textContent = '4:18';
 
 // 播放列表：点开，等 MV 封面换上去
-// 预览图里没有宿主的标题栏，抽屉不用给窗口按钮让位（真实运行时这个值是量出来的）。
-root.style.setProperty('--mv-chrome-top', '0px');
+// 预览图里的宿主顶栏是 32px + 8px 间距，真实运行时这个值是量出来的
+root.style.setProperty('--mv-chrome-top', '40px');
 const queueBtn = [...root.querySelectorAll('.mv-btn')].find((el) => el.title.startsWith('播放列表'));
 if (queueBtn) queueBtn.click();
 await new Promise((r) => setTimeout(r, 1400));

@@ -7,6 +7,7 @@
  */
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
@@ -71,7 +72,14 @@ const OK_RESULT = {
 };
 
 /** 造一个够用的宿主。返回的 calls 记录模组都干了什么。 */
-function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
+function makeHost({
+  minor = 9,
+  resolveResult = OK_RESULT,
+  song = SONG,
+  internals = null,
+  queueItems = QUEUE,
+  stored = {},
+} = {}) {
   const dom = new JSDOM('<!doctype html><html><body><div id="bar"></div></body></html>', {
     pretendToBeVisual: true,
     url: 'https://folia.local/',
@@ -99,6 +107,34 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
   };
   window.HTMLMediaElement.prototype.load = function load() {};
 
+  // jsdom 没有 IntersectionObserver。给一个能手动「报可见」的替身：
+  // 模组的封面是「滚进可视区才去问」，测试要能控制哪一行算滚进来了。
+  const observers = [];
+  class FakeIntersectionObserver {
+    constructor(callback, options) {
+      this.callback = callback;
+      this.options = options || {};
+      this.targets = new Set();
+      observers.push(this);
+    }
+    observe(el) {
+      this.targets.add(el);
+    }
+    unobserve(el) {
+      this.targets.delete(el);
+    }
+    disconnect() {
+      this.targets.clear();
+    }
+    /** 测试用：把这几行当成「刚滚进可视区」。 */
+    emit(elements) {
+      const entries = elements.map((target) => ({ target, isIntersecting: true }));
+      if (entries.length) this.callback(entries, this);
+    }
+  }
+  window.IntersectionObserver = FakeIntersectionObserver;
+  globalThis.IntersectionObserver = FakeIntersectionObserver;
+
   const calls = {
     rpc: [],
     pause: 0,
@@ -106,29 +142,13 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
     queue: 0,
     queueIndex: null,
     toasts: [],
-    fullscreen: 0,
+    storageGet: [],
+    storageSet: [],
     registered: { settings: [], buttons: [], layers: [], commands: [] },
   };
 
-  // 宿主的 preload 会暴露 window.electron：右上角那个全屏按钮按的就是它。
-  let fullscreenOn = false;
-  const fullscreenWatchers = [];
-  window.electron = {
-    toggleFullscreenWindow: async () => {
-      calls.fullscreen += 1;
-      fullscreenOn = !fullscreenOn;
-      for (const fn of fullscreenWatchers) fn(fullscreenOn);
-      return fullscreenOn;
-    },
-    isWindowFullscreen: async () => fullscreenOn,
-    onWindowFullscreenChanged: (fn) => {
-      fullscreenWatchers.push(fn);
-      return () => {
-        const index = fullscreenWatchers.indexOf(fn);
-        if (index >= 0) fullscreenWatchers.splice(index, 1);
-      };
-    },
-  };
+  /* 不再 mock 宿主 preload 的私有全屏通道：模组里已经完全没有这条依赖。
+   * 假 host 只暴露 Folium 的公开 folium.storage（音量 / 挑片记录 / 封面缓存都走它）。 */
 
   const listeners = new Map();
   const settingsValues = {
@@ -140,11 +160,19 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
 
   const folium = {
     env: { context: 'main' },
-    host: { folium: { major: 1, minor } },
+    host: { folium: { major: 1, minor }, folia: '0.8.0' },
+    // 0.8.0 的 song DTO 只剩 id/title/artist/album/source/ref，时长与封面在这里
+    internals: internals || undefined,
     log: { info() {}, warn() {}, error() {}, debug() {} },
     storage: {
-      get: async () => null,
-      set: async () => {},
+      get: async (key) => {
+        calls.storageGet.push(key);
+        return Object.prototype.hasOwnProperty.call(stored, key) ? stored[key] : null;
+      },
+      set: async (key, value) => {
+        calls.storageSet.push({ key, value });
+        stored[key] = value;
+      },
     },
     playback: {
       getState: () => ({ song, state: 'playing', position: 12, duration: 270 }),
@@ -155,8 +183,8 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
         calls.play += 1;
       },
       getQueue: () => ({
-        items: QUEUE,
-        length: QUEUE.length,
+        items: queueItems,
+        length: queueItems.length,
         currentIndex: 0,
         kind: 'queue',
         version: 'v1',
@@ -164,7 +192,7 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
       playQueueItem: async (index) => {
         calls.queue += 1;
         calls.queueIndex = index;
-        return index >= 0 && index < QUEUE.length;
+        return index >= 0 && index < queueItems.length;
       },
     },
     events: {
@@ -263,13 +291,13 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
     theme: { resolveFontStack: () => 'sans-serif', resolveFontWeight: () => 600 },
   };
 
-  return { dom, window, folium, calls, listeners, media };
+  return { dom, window, folium, calls, listeners, media, observers };
 }
 
 const flush = async (times = 6) => {
   for (let i = 0; i < times; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
-  // requestAnimationFrame 在 pretendToBeVisual 下约 16ms 后跑，留一点余量
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  // requestAnimationFrame 在 pretendToBeVisual 下约 16ms 后跑；封面请求还有 90ms 的合批防抖
+  await new Promise((resolve) => setTimeout(resolve, 200));
 };
 
 function installGlobals(window) {
@@ -280,6 +308,7 @@ function installGlobals(window) {
   globalThis.Node = window.Node;
   globalThis.Event = window.Event;
   globalThis.KeyboardEvent = window.KeyboardEvent;
+  globalThis.MutationObserver = window.MutationObserver;
   globalThis.requestAnimationFrame = window.requestAnimationFrame.bind(window);
   globalThis.cancelAnimationFrame = window.cancelAnimationFrame.bind(window);
   globalThis.localStorage = window.localStorage;
@@ -290,7 +319,7 @@ function installGlobals(window) {
  * ------------------------------------------------------------------ */
 
 {
-  const { window, folium, calls, listeners, media } = makeHost();
+  const { window, folium, calls, listeners, media, observers } = makeHost();
   installGlobals(window);
 
   const { default: activate } = await import(pathToFileURL(clientPath).href);
@@ -300,7 +329,7 @@ function installGlobals(window) {
   const section = calls.registered.settings[0];
   assert.ok(section, '必须注册设置分区');
   const keys = section.settings.map((item) => item.key);
-  assert.deepEqual(keys, ['pauseMusic', 'autoNext', 'quality', 'volume', 'cookie']);
+  assert.deepEqual(keys, ['pauseMusic', 'autoNext', 'inlineButton', 'quality', 'volume', 'cookie']);
   const cookieItem = section.settings.find((item) => item.key === 'cookie');
   assert.equal(cookieItem.type, 'secret');
 
@@ -379,33 +408,38 @@ function installGlobals(window) {
   await flush(2);
   assert.equal(video.paused, false, '点控件不该暂停画面');
 
-  // 全屏按钮：走宿主的整窗全屏（就是应用右上角那个按钮），进去之后立刻收起标题与控制条
-  const expandBtn = root.querySelector('.mv-btn[title="整窗全屏"]');
-  assert.ok(expandBtn, '控制条上要有整窗全屏按钮');
-  root.removeAttribute('data-idle');
-  expandBtn.click();
-  await flush(3);
-  assert.equal(calls.fullscreen, 1, '全屏要交给宿主窗口，不是 DOM requestFullscreen');
-  assert.equal(root.getAttribute('data-fs'), '1');
-  assert.equal(root.getAttribute('data-idle'), '1', '进全屏后标题与控制条要收起来');
+  // 审核整改：整窗全屏按钮已去掉，控制条不该再出现私有全屏通道的入口
   assert.equal(
-    root.style.getPropertyValue('--mv-chrome-top'),
-    '0px',
-    '整窗全屏没有右上角按钮，抽屉可以顶到边上',
+    root.querySelector('.mv-btn[title="整窗全屏"]'),
+    null,
+    '控制条不该再有整窗全屏按钮（宿主 preload 私有接口已整条移除）',
   );
+  assert.equal(root.getAttribute('data-fs'), null, '不该再维护整窗全屏状态');
 
-  // 第一次 Esc 只退全屏，影院还在
-  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  await flush(3);
-  assert.equal(calls.fullscreen, 2, 'Esc 先退全屏');
-  assert.equal(root.getAttribute('data-fs'), '0');
-  assert.equal(root.getAttribute('data-shown'), '1', '退全屏不该把 MV 关掉');
+  // 音量：改动写进 folium.storage，宿主页面的 localStorage 一个字节都不碰
+  const volumeRange = root.querySelector('.mv-range');
+  assert.ok(volumeRange, '控制条上要有音量滑块');
+  volumeRange.value = '35';
+  volumeRange.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await flush(2);
+  assert.ok(calls.storageGet.includes('volume'), '打开时要从 folium.storage 读回音量');
+  const volumeWrite = calls.storageSet.find((entry) => entry.key === 'volume');
+  assert.ok(volumeWrite, '音量改动要写进 folium.storage');
+  assert.equal(volumeWrite.value, 0.35, '存的应是 0~1 的音量值');
+  assert.equal(window.localStorage.length, 0, '不该再写宿主页面的 localStorage');
 
   // 7. 空格暂停 / Esc 退出
+  // jsdom 的媒体桩只派 play、不派 playing：补一次，模组才会认为已经进了播放态
+  video.dispatchEvent(new window.Event('playing'));
+  await flush(1);
   const space = new window.KeyboardEvent('keydown', { key: ' ', bubbles: true });
   window.document.dispatchEvent(space);
   await flush(2);
   assert.ok(media.pauses >= 1, '空格要能暂停');
+  assert.equal(root.getAttribute('data-idle'), null, '刚暂停时控件要亮着');
+  // 暂停后停手 3 秒：进度条 / 音量这些也要自己收起来，跟播放时一样
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  assert.equal(root.getAttribute('data-idle'), '1', '暂停时控件也要自动隐藏');
 
   const esc = new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
   window.document.dispatchEvent(esc);
@@ -433,22 +467,36 @@ function installGlobals(window) {
   await flush(4);
   const panel = root.querySelector('.mv-queue');
   assert.equal(panel.getAttribute('data-open'), '1', '播放列表要能拉开');
-  assert.ok(
-    parseInt(root.style.getPropertyValue('--mv-chrome-top'), 10) >= 20,
-    '抽屉要往下让开窗口右上角的按钮（全屏 / 最小化 / 关闭）',
-  );
   const rows = [...panel.querySelectorAll('.mv-qrow')];
   assert.equal(rows.length, 3, '队列里有三首就要列三行');
-  assert.equal(rows[0].getAttribute('data-current'), '1', '当前这首要标出来');
-  const previewCalls = calls.rpc.filter((call) => call.name === 'mvPreview');
-  assert.ok(previewCalls.length, '要给看得见的行去要 MV 封面');
-  // 进影院时会先预热一批，拉开列表时再补一批：合起来看问过哪些歌。
-  const askedKeys = previewCalls.flatMap((call) => (call.payload.items || []).map((item) => item.key));
-  assert.ok(askedKeys.includes(`稻香\u241F周杰伦`), '还没封面的行要去问一次');
-  assert.ok(!askedKeys.includes(`晴天\u241F周杰伦`), '列表里当前那一行不用查，它手上就有封面');
-  for (const call of previewCalls) {
-    assert.ok((call.payload.items || []).length <= 8, '一次最多问 8 首，别把整个队列都打出去');
+  assert.equal(rows[1].getAttribute('data-current'), '1', '当前这首（屏幕上演的七里香）要标出来');
+  // 封面没到之前不是一块灰：每一格都有一个「胶片 + 播放」的占位图标
+  for (const row of rows) {
+    assert.ok(row.querySelector('.mv-qph svg'), '没有封面时要有占位图标');
   }
+
+  const keysAsked = () =>
+    calls.rpc
+      .filter((call) => call.name === 'mvPreview')
+      .flatMap((call) => (call.payload.items || []).map((item) => item.key));
+
+  // 一拉开列表还不该朝 B 站打一串搜索：只有真的滚进可视区的那几行才问。
+  assert.equal(keysAsked().length, 0, '列表刚画出来、还没滚到，就不该去搜封面');
+
+  const io = observers.at(-1);
+  assert.ok(io, '要给列表挂一个可见性观察器');
+  assert.equal(io.options.root, panel.querySelector('.mv-queue-list'), '以列表本身作滚动容器');
+
+  // 只滚到第三行：只问这一首（前两行手上都有封面：一行是队列当前，一行是屏幕上演的）
+  io.emit([rows[2]]);
+  await flush(2);
+  assert.deepEqual(keysAsked(), ['稻香\u241F周杰伦'], '滚到哪一行就只问那一行');
+  assert.ok(!keysAsked().includes('晴天\u241F周杰伦'), '列表里当前那一行不用查，它手上就有封面');
+  assert.ok(!keysAsked().includes('七里香\u241F周杰伦'), '屏幕上演的那首也不用查');
+  for (const call of calls.rpc.filter((item) => item.name === 'mvPreview')) {
+    assert.ok((call.payload.items || []).length <= 3, '一批最多问 3 首，回来一批先贴一批');
+  }
+
   const thumbs = rows.map((row) => row.querySelector('img').getAttribute('src'));
   assert.ok(
     thumbs.some((src) => String(src).includes('hdslb.com')),
@@ -565,7 +613,7 @@ function installGlobals(window) {
   const keys = calls.registered.settings[0].settings.map((item) => item.key);
   assert.deepEqual(
     keys,
-    ['pauseMusic', 'autoNext', 'quality', 'volume'],
+    ['pauseMusic', 'autoNext', 'inlineButton', 'quality', 'volume'],
     '1.6 上不出现 secret 字段',
   );
   assert.ok(calls.registered.commands.length >= 2);
@@ -676,6 +724,372 @@ function installGlobals(window) {
   if (typeof dispose === 'function') dispose();
 
   console.log('✓ 换源：列候选 → 自己搜 → 挑一支直接播；播放列表能定位到当前');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 5：宿主搜索列表里的 MV 图标
+ * ------------------------------------------------------------------ */
+
+{
+  const { window, folium, calls } = makeHost();
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  // 全屏层要像宿主那样挂一次，MV 页才会进 DOM
+  const stage = window.document.createElement('div');
+  window.document.body.appendChild(stage);
+  for (const layer of calls.registered.layers) layer.mount(stage);
+
+  // 复刻宿主搜索结果的一行（结构来自真机 dump：.search-row > 封面 / 文本 / 时长 / 操作）
+  const row = window.document.createElement('div');
+  row.className = 'search-row';
+  row.innerHTML = `
+    <span class="search-row-index">01</span>
+    <button class="search-row-cover"><img><span class="search-row-play"></span></button>
+    <div class="min-w-0 flex-1">
+      <div class="flex items-center gap-2"><button><span>晴天</span></button></div>
+      <div class="mt-1 flex"><span><button>周杰伦</button></span><button>叶惠美</button></div>
+    </div>
+    <span class="font-mono text-xs">4:29</span>
+    <button class="search-row-action"></button>
+    <button class="search-row-action"></button>`;
+  window.document.body.appendChild(row);
+
+  await flush(4);
+
+  const inline = row.querySelector('.mv-row-btn');
+  assert.ok(inline, '搜索结果的每一行要长出一个 MV 图标');
+  assert.match(inline.title, /晴天/, '图标要说明是哪首歌的 MV');
+  assert.equal(row.getAttribute('data-mv-row'), '1', '同一行别重复插');
+  assert.equal(
+    row.querySelectorAll('.mv-row-btn').length,
+    1,
+    '重扫一次也只留一个图标（宿主列表会频繁重渲染）',
+  );
+
+  // 点图标：直接进影院找这首的 MV，且**不动宿主**
+  inline.click();
+  await flush(4);
+  const resolveCalls = calls.rpc.filter((call) => call.name === 'resolveMv');
+  assert.equal(resolveCalls.length, 1, '点图标要就地去找 MV');
+  assert.equal(resolveCalls[0].payload.title, '晴天', '歌名从这一行读');
+  assert.equal(resolveCalls[0].payload.artist, '周杰伦', '歌手也从这一行读');
+  assert.equal(resolveCalls[0].payload.durationMs, 269000, '时长同样跟着这一行');
+  assert.equal(calls.queue, 0, '点图标不能切歌（否则会跳到宿主播放页）');
+  assert.equal(calls.pause, 1, '看 MV 时按设置把音乐压住');
+  const root = window.document.querySelector('.mv-root');
+  assert.equal(root.getAttribute('data-shown'), '1', 'MV 页要在屏幕上');
+
+  // 关掉开关：图标收回去
+  window.document.body.appendChild(window.document.createElement('div'));
+  if (typeof dispose === 'function') dispose();
+  assert.equal(window.document.querySelectorAll('.mv-row-btn').length, 0, '退出时把自己的图标摘干净');
+
+  console.log('✓ 搜索列表：行内 MV 图标 → 就地看这支 MV，不动宿主播放');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 6：播放器侧栏「播放列表」里的 MV 图标
+ * ------------------------------------------------------------------ */
+
+{
+  const { window, folium, calls } = makeHost();
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  const stage = window.document.createElement('div');
+  window.document.body.appendChild(stage);
+  for (const layer of calls.registered.layers) layer.mount(stage);
+
+  // 复刻真机 dump：侧栏面板 → 虚拟列表的队列行（带 data-active / 队列下标）
+  const panel = window.document.createElement('div');
+  panel.className = 'dock-companion dock-companion--panel-surface';
+  const scroller = window.document.createElement('div');
+  scroller.className = 'st-scroll';
+  panel.appendChild(scroller);
+  window.document.body.appendChild(panel);
+
+  const row = window.document.createElement('div');
+  row.setAttribute('data-active', 'false');
+  row.setAttribute('data-react-window-index', '1');
+  row.setAttribute('aria-posinset', '2');
+  row.setAttribute('role', 'listitem');
+  row.className =
+    'st-t-fast group flex cursor-pointer items-center rounded-lg pl-3 pr-1.5 transition-colors';
+  row.innerHTML = `
+    <div class="min-w-0 flex-1">
+      <div class="flex items-center gap-2 text-[13px] leading-[19px]"><span class="truncate">七里香</span></div>
+      <div class="truncate text-xs leading-[17px]">周杰伦</div>
+    </div>
+    <div class="st-t-fast flex w-0 shrink-0 items-center gap-0.5 overflow-hidden opacity-0">
+      <span><button></button></span>
+    </div>`;
+  scroller.appendChild(row);
+
+  await flush(4);
+
+  const inline = row.querySelector('.mv-row-btn');
+  assert.ok(inline, '播放器队列的每一行也要长出 MV 图标');
+  assert.match(inline.title, /七里香/, '图标要说明是哪首歌的 MV');
+  assert.equal(inline.style.width, '28px', '侧栏行用 28×28 的小方钮，跟宿主那排图标一致');
+  assert.equal(inline.style.borderRadius, '8px', '侧栏行用圆角方钮，不是搜索行的圆形大钮');
+  assert.ok(row.getAttribute('data-mv-song'), '记下这一行装的是哪首歌');
+  assert.equal(row.querySelectorAll('.mv-row-btn').length, 1, '重扫也只留一个图标');
+
+  // 虚拟列表会复用同一个 DOM 节点：换成下一首，图标得跟着换
+  row.setAttribute('data-react-window-index', '2');
+  row.querySelector('span.truncate').textContent = '稻香';
+  row.appendChild(window.document.createElement('span')); // 触发一次子树变化
+  await flush(4);
+  assert.match(row.querySelector('.mv-row-btn').title, /稻香/, '复用行时要换成新歌');
+  assert.equal(row.querySelectorAll('.mv-row-btn').length, 1, '换歌后仍只有一个图标');
+
+  // 点图标：拿宿主队列里的完整 song（含时长）去找 MV，不切歌
+  row.querySelector('.mv-row-btn').click();
+  await flush(4);
+  const resolveCalls = calls.rpc.filter((call) => call.name === 'resolveMv');
+  assert.equal(resolveCalls.length, 1, '点图标要就地去找 MV');
+  assert.equal(resolveCalls[0].payload.title, '稻香', '歌名用宿主队列里的');
+  assert.equal(resolveCalls[0].payload.artist, '周杰伦', '歌手也用宿主队列里的');
+  assert.equal(resolveCalls[0].payload.durationMs, 270000, '时长从宿主队列补齐（行上没有 mm:ss）');
+  assert.equal(calls.queue, 0, '点图标不能切歌');
+
+  if (typeof dispose === 'function') dispose();
+  assert.equal(window.document.querySelectorAll('.mv-row-btn').length, 0, '退出时把自己的图标摘干净');
+
+  console.log('✓ 播放器队列：行内 MV 图标 → 就地看这支 MV，不动宿主播放');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 7：0.8.0 的 song DTO（只剩 id/title/artist/album/source/ref）
+ * ------------------------------------------------------------------ */
+
+{
+  // 0.8.0 起宿主给模组的 DTO：没有 duration、没有封面、artist 是字符串
+  const dtoSong = {
+    id: '97773',
+    title: '晴天',
+    artist: '周杰伦',
+    album: '叶惠美',
+    source: 'qq',
+    ref: 'song-c9',
+  };
+  // 宿主内部那份还是完整的（时长 / 多歌手 / 专辑封面都在）
+  const richSong = {
+    id: 97773,
+    name: '晴天',
+    artists: [{ name: '周杰伦' }],
+    album: { name: '叶惠美', coverUrl: 'https://y.gtimg.cn/music/photo_new/T002.jpg' },
+    durationMs: 269746,
+  };
+  const dtoNext = {
+    id: '185809',
+    title: '七里香',
+    artist: '周杰伦',
+    album: '七里香',
+    source: 'qq',
+    ref: 'song-7',
+  };
+  const richNext = {
+    id: 185809,
+    name: '七里香',
+    artists: [{ name: '周杰伦' }],
+    album: { name: '七里香', coverUrl: 'https://y.gtimg.cn/music/photo_new/T003.jpg' },
+    durationMs: 299000,
+  };
+  const internals = {
+    stores: {
+      playback: {
+        getState: () => ({ currentSong: richSong, playQueue: [richSong, richNext] }),
+      },
+    },
+  };
+  const queueItems = [
+    { index: 0, song: dtoSong },
+    { index: 1, song: dtoNext },
+  ];
+
+  const { window, folium, calls } = makeHost({ song: dtoSong, internals, queueItems });
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  const stage = window.document.createElement('div');
+  window.document.body.appendChild(stage);
+  for (const layer of calls.registered.layers) layer.mount(stage);
+
+  const bar = window.document.getElementById('bar');
+  calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+  bar.querySelector('button').click();
+  await flush(4);
+
+  const resolveCalls = calls.rpc.filter((call) => call.name === 'resolveMv');
+  assert.equal(resolveCalls.length, 1);
+  assert.equal(resolveCalls[0].payload.title, '晴天');
+  assert.equal(resolveCalls[0].payload.artist, '周杰伦', '0.8 的 artist 是字符串，也要读得出来');
+  assert.equal(
+    resolveCalls[0].payload.durationMs,
+    269746,
+    'DTO 里没有时长，要从宿主内部队列补齐（时长是挑片的一条硬信号）',
+  );
+
+  const root = window.document.querySelector('.mv-root');
+  // jsdom 量不到按钮位置 → 至少要让开宿主顶栏那 32px（+8px 间距）
+  assert.equal(
+    root.style.getPropertyValue('--mv-chrome-top'),
+    '40px',
+    '抽屉标题栏要让开宿主右上角的窗口按钮',
+  );
+
+  // 队列列表里也应该看得见时长与封面（都是从内部那份补的）：看第二行的那首待播
+  root.querySelector('.mv-btn[title^="播放列表"]').click();
+  await flush(3);
+  const rows = root.querySelectorAll('.mv-qrow');
+  assert.equal(rows.length, 2, '队列两首都列出来');
+  const sub = rows[1].querySelector('.mv-qsub');
+  assert.match(sub.textContent, /周杰伦/, '歌手照常显示');
+  assert.match(sub.textContent, /4:59/, '时长从宿主内部队列补回来了');
+  const cover = rows[1].querySelector('.mv-qthumb img');
+  assert.match(
+    String(cover && cover.getAttribute('src')),
+    /T003\.jpg/,
+    '封面先用宿主队列里的专辑图顶上',
+  );
+
+  if (typeof dispose === 'function') dispose();
+  console.log('✓ 0.8.0：song DTO 只剩 id/title/artist，时长与封面从宿主队列补齐');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 8：从搜索列表点进来的 MV 不在宿主队列里
+ * 列表要把它置顶成当前项，而不是拿宿主队列的下标去高亮另一首歌；
+ * 计数只报列表实际条数，不写「48/439」那种宿主队列位置。
+ * ------------------------------------------------------------------ */
+
+{
+  const { window, folium, calls } = makeHost();
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  const stage = window.document.createElement('div');
+  window.document.body.appendChild(stage);
+  for (const layer of calls.registered.layers) layer.mount(stage);
+
+  // 宿主队列里是周杰伦三首；搜索到的是完全另一首
+  const row = window.document.createElement('div');
+  row.className = 'search-row';
+  row.innerHTML = `
+    <span class="search-row-index">01</span>
+    <button class="search-row-cover"><img><span class="search-row-play"></span></button>
+    <div class="min-w-0 flex-1">
+      <div class="flex items-center gap-2"><button><span>快点告诉你</span></button></div>
+      <div class="mt-1 flex"><span><button>李梦璐</button></span><button>儿歌</button></div>
+    </div>
+    <span class="font-mono text-xs">3:21</span>
+    <button class="search-row-action"></button>`;
+  window.document.body.appendChild(row);
+
+  await flush(4);
+  row.querySelector('.mv-row-btn').click();
+  await flush(4);
+
+  const root = window.document.querySelector('.mv-root');
+  root.querySelector('.mv-btn[title^="播放列表"]').click();
+  await flush(3);
+
+  const rows = [...root.querySelectorAll('.mv-qrow')];
+  assert.equal(rows.length, 4, '置顶那首 + 队列三首');
+  assert.match(
+    rows[0].querySelector('.mv-qtitle').textContent,
+    /快点告诉你/,
+    '正在看的那首必须出现在列表里',
+  );
+  assert.equal(rows[0].getAttribute('data-current'), '1', '置顶那行才是当前');
+  assert.equal(
+    rows[1].getAttribute('data-current'),
+    '0',
+    '宿主队列第一首（晴天）不能被误标成当前',
+  );
+
+  const count = root.querySelector('.mv-queue-count').textContent;
+  assert.equal(count, '4 首', '计数要跟列表条数一致');
+  assert.doesNotMatch(count, /\//, '不能写成「48/439」那种宿主队列位置');
+
+  // 点置顶那行：回到这首的开头，而不是去队列里找一首不相干的歌
+  const before = calls.queue;
+  rows[0].click();
+  await flush(2);
+  assert.equal(calls.queue, before, '置顶行不能切宿主队列');
+
+  if (typeof dispose === 'function') dispose();
+  console.log('✓ 搜索进来的歌不在队列里：列表置顶当前这首，计数只报列表条数');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 9：静态合规扫描 —— 审核明确列为「不收」的私有接口，源码里一个都不能有
+ * ------------------------------------------------------------------ */
+{
+  const source = fs.readFileSync(clientPath, 'utf8');
+  const forbidden = [
+    'window.electron',
+    'toggleFullscreenWindow',
+    'isWindowFullscreen',
+    'onWindowFullscreenChanged',
+    'localStorage',
+    'requestFullscreen',
+  ];
+  for (const token of forbidden) {
+    assert.ok(
+      !source.includes(token),
+      `client.mjs 不该再出现「${token}」：宿主 preload 私有通道与整窗全屏已整条移除`,
+    );
+  }
+  assert.ok(source.includes("folium.storage.get(VOL_KEY)"), '音量要从 folium.storage 读');
+  assert.ok(source.includes('folium.storage.set(VOL_KEY'), '音量要写回 folium.storage');
+  assert.ok(source.includes("addEventListener('fullscreenchange'"), '要用标准的 fullscreenchange 事件跟随窗口');
+  assert.ok(source.includes("addEventListener('resize', syncWindowChrome"), '让位逻辑仍要在 resize 时重算');
+  console.log('✓ 静态扫描：client.mjs 不含宿主 preload 私有接口 / localStorage / DOM 全屏调用');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 10：上次存过的音量要能从 folium.storage 读回并生效（异步 get）
+ * ------------------------------------------------------------------ */
+{
+  const { window, folium, calls } = makeHost({ stored: { volume: 0.27 } });
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  const stage = window.document.createElement('div');
+  window.document.body.appendChild(stage);
+  for (const layer of calls.registered.layers) layer.mount(stage);
+
+  const bar = window.document.getElementById('bar');
+  calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+  bar.querySelector('button').click();
+  await flush(4);
+
+  const root = window.document.querySelector('.mv-root');
+  assert.ok(calls.storageGet.includes('volume'), '打开时要读 volume');
+  assert.equal(root.querySelector('.mv-range').value, '27', '存过的 0.27 要变回滑块上的 27%');
+
+  // 手动调过音量后，异步读回的旧值不能把它盖掉
+  const volumeRange = root.querySelector('.mv-range');
+  volumeRange.value = '80';
+  volumeRange.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await flush(4);
+  assert.equal(volumeRange.value, '80', '用户手动调过的音量不能被异步读回覆盖');
+
+  if (typeof dispose === 'function') dispose();
+  console.log('✓ 音量：从 folium.storage 异步读回生效，且不覆盖用户手动调整');
 }
 
 console.log('\n全部通过。');

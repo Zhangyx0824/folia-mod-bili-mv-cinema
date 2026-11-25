@@ -47,6 +47,15 @@ const QUALITY_QN = Object.freeze({
   '480p': 32,
 });
 
+/**
+ * 一支 MV 至少得多长。
+ *
+ * B 站上「歌名 歌手」搜出来的头部经常混着十几秒的东西：分P视频的 P1 预告 / 切片、
+ * 15 秒二创、试听片段、花絮前导。全屏看一支 15 秒的片子等于没看，所以这条线以下
+ * 直接不算 MV —— 排序时沉底、取流时拒绝，resolve 会顺着候选往下找。
+ */
+const MIN_MV_SECONDS = 20;
+
 const QN_LABEL = Object.freeze({
   127: '8K',
   126: '杜比视界',
@@ -368,7 +377,6 @@ function scoreCandidate(item, want) {
 
   if (seconds >= 45 && seconds <= 900) otherScore += 12;
   if (seconds > 1800 || (seconds > 0 && seconds < 25)) otherScore -= 30;
-
   const plays = Number(item.play) || 0;
   otherScore += Math.min(30, Math.log10(plays + 1) * 6);
 
@@ -400,16 +408,30 @@ function scoreCandidate(item, want) {
     nameHit,
     artistHit,
     artistSource: uploaderHit ? 'uploader' : titleArtistHit ? 'title' : null,
+    /** 搜索结果里自报的时长就不到 20 秒：大概率是片段，排到最后。 */
+    short: seconds > 0 && seconds < MIN_MV_SECONDS,
     official: 0,
     verify: '',
   };
 }
 
+/**
+ * 排序：不短的在前，短的整批沉底。
+ *
+ * 不在这一步直接删掉，是因为搜索结果里的 duration 是 **P1 的时长**：分P投稿
+ * 可能 P1 是 15 秒预告、P2 才是正片，删了就白白丢掉一支真 MV。真正判断
+ * 「这是不是片段」放在 getVideoMeta 里，那里能看到 pages。
+ */
 function rankCandidates(items, want) {
   return items
     .map((item) => ({ item, score: scoreCandidate(item, want) }))
     .filter((entry) => entry.score !== null)
-    .sort((a, b) => b.score.total - a.score.total);
+    .sort((a, b) => {
+      const shortA = a.score.short ? 1 : 0;
+      const shortB = b.score.short ? 1 : 0;
+      if (shortA !== shortB) return shortA - shortB;
+      return b.score.total - a.score.total;
+    });
 }
 
 /* ------------------------------------------------------------------ *
@@ -530,7 +552,12 @@ async function applyVerify(ranked, want, limit = 4) {
     if (!entry.score.verify && result.level >= 2) entry.score.verify = result.title;
   });
 
-  ranked.sort((a, b) => b.score.total - a.score.total);
+  ranked.sort((a, b) => {
+    const shortA = a.score.short ? 1 : 0;
+    const shortB = b.score.short ? 1 : 0;
+    if (shortA !== shortB) return shortA - shortB;
+    return b.score.total - a.score.total;
+  });
   return ranked;
 }
 
@@ -542,12 +569,29 @@ function absoluteCover(url) {
   return text;
 }
 
+/**
+ * 列表里的小图。
+ *
+ * 播放列表一格只有 78×44，封面原图却常常是 672×378 的 JPEG（几十 KB）。
+ * B 站图床支持在地址后面挂一段图片处理参数现场裁一张：
+ *   https://i0.hdslb.com/bfs/archive/xxx.jpg@176w_100h_1c.webp
+ * 尺寸刚好对上 2 倍屏，体积小一个数量级 —— 十几张图一起加载也不会打堆。
+ * 别家的图（或已经带过参数的老地址）原样返回，不硬套。
+ */
+function thumbCover(url, width = 176, height = 100) {
+  const text = absoluteCover(url);
+  if (!/^https?:\/\//i.test(text)) return text;
+  const base = text.split('@')[0];
+  if (!/(hdslb|biliimg)\.com\//i.test(base)) return base;
+  return `${base}@${width}w_${height}h_1c.webp`;
+}
+
 function toCandidateDto(entry) {
   return {
     bvid: entry.item.bvid,
     title: entry.item.title,
     author: entry.item.author,
-    cover: absoluteCover(entry.item.pic),
+    cover: thumbCover(entry.item.pic),
     duration: entry.item.duration,
     durationSec: parseDuration(entry.item.duration),
     play: Number(entry.item.play) || 0,
@@ -558,6 +602,8 @@ function toCandidateDto(entry) {
     nameHit: entry.score.nameHit,
     artistHit: entry.score.artistHit,
     artistSource: entry.score.artistSource,
+    /** 搜索结果自报不到 20 秒：界面上标一下，别让用户以为是一支短片 MV。 */
+    short: Boolean(entry.score.short),
   };
 }
 
@@ -631,6 +677,42 @@ async function searchVideos(keyword, retried = false) {
  * 取播放地址
  * ------------------------------------------------------------------ */
 
+/**
+ * 分P视频挑「正片」那一 P。
+ *
+ * view 接口里的 `data.cid` 只指向 P1，而音乐区一堆投稿是 P1 放十几秒预告、
+ * P2 才是整支 MV（或者 P1 是切片、P2 是完整版）。照着 data.cid 取流，播出来的
+ * 就是那十几秒 —— 用户看到的现象是「点进去几秒就结束了」。
+ *
+ * 所以有 pages 时取**时长最长**的那一 P，它才是正片；只有一 P 时行为和以前一样。
+ */
+function pickPage(data) {
+  const pages = Array.isArray(data.pages) ? data.pages : [];
+  let best = null;
+  for (let i = 0; i < pages.length; i += 1) {
+    const page = pages[i] || {};
+    const cid = Number(page.cid) || 0;
+    if (!cid) continue;
+    const duration = Number(page.duration) || 0;
+    if (!best || duration > best.durationSec) {
+      best = {
+        cid,
+        durationSec: duration,
+        page: Number(page.page) || i + 1,
+        part: String(page.part || ''),
+      };
+    }
+  }
+  if (best) return best;
+
+  return {
+    cid: Number(data.cid) || 0,
+    durationSec: Number(data.duration) || 0,
+    page: 0,
+    part: '',
+  };
+}
+
 async function getVideoMeta(bvid) {
   const current = await getSession();
   const json = await getJson(
@@ -643,14 +725,22 @@ async function getVideoMeta(bvid) {
   }
 
   const data = json.data || {};
-  const cid = data.cid || (Array.isArray(data.pages) && data.pages[0] && data.pages[0].cid);
-  if (!cid) throw new Error('view-no-cid');
+  const page = pickPage(data);
+  if (!page.cid) throw new Error('view-no-cid');
+
+  // 十几秒的片子不是 MV：让上层顺着候选往下换一个。
+  if (page.durationSec > 0 && page.durationSec < MIN_MV_SECONDS) {
+    throw new Error(`too-short: ${page.durationSec}s`);
+  }
 
   return {
-    cid: Number(cid),
+    cid: page.cid,
+    page: page.page,
+    part: page.part,
+    pages: Array.isArray(data.pages) ? data.pages.length : 1,
     title: String(data.title || ''),
     author: String((data.owner && data.owner.name) || ''),
-    durationSec: Number(data.duration) || 0,
+    durationSec: page.durationSec || Number(data.duration) || 0,
     cover: String(data.pic || ''),
   };
 }
@@ -1167,35 +1257,65 @@ async function resolveMv(input) {
     best = ranked[0].item;
   }
 
-  let meta;
-  try {
-    meta = await getVideoMeta(best.bvid);
-  } catch (err) {
+  /**
+   * 顺着候选往下试，别把命押在第一名身上。
+   *
+   * 第一名可能是十几秒的片段（分P的预告、切片）、被版权/地区限制掐掉、或者干脆取不到流。
+   * 以前这几种情况整次都失败，界面只能弹「没找到」。现在按分数依次试前 4 个，
+   * 第一个能真正出流的就用它 —— 用户关心的是「有 MV 看」，不是「必须是最高分的那支」。
+   * 只有 bvid 是明确指定的时候（换源里点的那支、手动挑过的），才只试这一个。
+   */
+  const attempts = bvidAsked ? [{ bvid: bvidAsked }] : ranked.slice(0, 4).map((entry) => entry.item);
+
+  let picked = null;
+  let meta = null;
+  let stream = null;
+  let lastError = '';
+  let skippedShort = 0;
+
+  for (const item of attempts) {
+    if (!item || !item.bvid) continue;
+
+    let candidateMeta;
+    try {
+      candidateMeta = await getVideoMeta(item.bvid);
+    } catch (err) {
+      lastError = String((err && err.message) || err);
+      if (lastError.startsWith('too-short')) skippedShort += 1;
+      continue;
+    }
+
+    let candidateStream;
+    try {
+      candidateStream = await resolveStream(item.bvid, candidateMeta.cid, qn);
+    } catch (err) {
+      lastError = String((err && err.message) || err);
+      continue;
+    }
+    if (!candidateStream) {
+      lastError = 'no-playable-url';
+      continue;
+    }
+
+    picked = item;
+    meta = candidateMeta;
+    stream = candidateStream;
+    break;
+  }
+
+  if (!picked) {
     return {
       ok: false,
-      error: String((err && err.message) || err),
+      // 全是十几秒的片段时给个能读懂的原因：界面据此提示「这首歌只有片段」。
+      error: skippedShort && skippedShort === attempts.length ? 'only-short-clips' : lastError || 'no-playable-video',
       bvid: best.bvid,
       keyword,
+      skippedShort,
       candidates: ranked.slice(0, 6).map(toCandidateDto),
     };
   }
 
-  let stream;
-  try {
-    stream = await resolveStream(best.bvid, meta.cid, qn);
-  } catch (err) {
-    return { ok: false, error: String((err && err.message) || err), bvid: best.bvid, keyword };
-  }
-
-  if (!stream) {
-    return {
-      ok: false,
-      error: 'no-playable-url',
-      bvid: best.bvid,
-      keyword,
-      candidates: ranked.slice(0, 6).map(toCandidateDto),
-    };
-  }
+  const pickedEntry = ranked.find((entry) => entry.item.bvid === picked.bvid) || null;
 
   try {
     await ensureProxyServer();
@@ -1205,21 +1325,23 @@ async function resolveMv(input) {
 
   return {
     ok: true,
-    bvid: best.bvid,
-    title: best.title || meta.title,
-    author: best.author || meta.author,
-    cover: absoluteCover(best.pic || meta.cover),
-    durationSec: meta.durationSec || parseDuration(best.duration),
-    score: ranked.length ? Math.round(ranked[0].score.total) : null,
-    typename: best.typename || '',
-    official: ranked.length ? ranked[0].score.official || 0 : 0,
-    verify: ranked.length ? ranked[0].score.verify || '' : '',
+    bvid: picked.bvid,
+    title: picked.title || meta.title,
+    author: picked.author || meta.author,
+    cover: thumbCover(picked.pic || meta.cover),
+    durationSec: meta.durationSec || parseDuration(picked.duration),
+    /** 分P投稿里挑中的是第几 P（1 = 没分P）。界面不显示，报错排查时有用。 */
+    page: meta.page,
+    score: pickedEntry ? Math.round(pickedEntry.score.total) : null,
+    typename: picked.typename || '',
+    official: pickedEntry ? pickedEntry.score.official || 0 : 0,
+    verify: pickedEntry ? pickedEntry.score.verify || '' : '',
     keyword,
     mode: stream.mode,
     quality: stream.quality,
     sources: buildSources(stream),
     candidates: ranked.slice(0, 6).map(toCandidateDto),
-    url: `https://www.bilibili.com/video/${best.bvid}`,
+    url: `https://www.bilibili.com/video/${picked.bvid}`,
   };
 }
 
@@ -1290,16 +1412,18 @@ async function previewOne(item) {
   const ranked = rankCandidates(items, want);
   if (!ranked.length) return { key, ok: false, error: 'no-candidate' };
 
-  const top = ranked[0];
+  // 缩略图也要挑一支像样的：短片段沉底之后，优先用第一个「不短」的候选。
+  const top = ranked.find((entry) => !entry.score.short) || ranked[0];
   return {
     key,
     ok: true,
     bvid: top.item.bvid,
-    cover: absoluteCover(top.item.pic),
+    cover: thumbCover(top.item.pic),
     author: top.item.author,
     title: top.item.title,
     typename: top.item.typename || '',
     score: Math.round(top.score.total),
+    short: Boolean(top.score.short),
   };
 }
 
@@ -1323,7 +1447,8 @@ async function mvPreview(input) {
     }
   };
 
-  await Promise.all([worker(), worker(), worker()]);
+  // 4 路并发：8 首歌两轮就完，再多人家的风控会开始回空列表。
+  await Promise.all([worker(), worker(), worker(), worker()]);
   return { ok: true, results };
 }
 
@@ -1429,4 +1554,15 @@ module.exports = function activate(runtime) {
     knownCookie = '';
     api = null;
   });
+};
+
+/**
+ * 给测试用的几个纯函数（不做网络请求，也不碰宿主）。
+ * 宿主只认 module.exports 上的函数本身，多挂一个属性没有副作用。
+ */
+module.exports.__internal = {
+  MIN_MV_SECONDS,
+  pickPage,
+  thumbCover,
+  rankCandidates,
 };

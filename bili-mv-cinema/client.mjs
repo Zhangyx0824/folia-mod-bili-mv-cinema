@@ -60,7 +60,11 @@ const ICON_TARGET = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none"
 const CSS = `
 .mv-root{position:absolute;inset:0;box-sizing:border-box;background:#000;color:#fff;
   font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",Arial,sans-serif;
-  pointer-events:auto;display:none;opacity:0;transition:opacity .2s ease;overflow:hidden}
+  pointer-events:auto;display:none;opacity:0;transition:opacity .2s ease;overflow:hidden;
+  /* 窗口右上角那排按钮（全屏 / 最小化 / 关闭）占掉的高度：抽屉从这里往下开始画，
+     免得列表的叉号、定位按钮跟它们叠在一块儿。真实值在运行时量（syncChromeTop），
+     这里的 52px 只是量不到时的兜底；整窗全屏时归零。 */
+  --mv-chrome-top:52px}
 .mv-root[data-open="1"]{display:block}
 .mv-root[data-shown="1"]{opacity:1}
 .mv-root *{box-sizing:border-box}
@@ -164,14 +168,18 @@ const CSS = `
 .mv-bigplay:hover{background:rgba(255,255,255,.24);transform:scale(1.04)}
 .mv-bigplay svg{width:30px;height:30px;margin-left:3px}
 
-/* 播放列表：右侧抽屉，跟 QQ 音乐一样把接下来要看的 MV 都摊开 */
-.mv-queue{position:absolute;top:0;right:0;bottom:0;width:312px;display:flex;flex-direction:column;
+/* 播放列表：右侧抽屉，跟 QQ 音乐一样把接下来要看的 MV 都摊开。
+   top 不贴 0：窗口右上角那排按钮是宿主画的，抽屉的标题栏（定位 / 叉号）得让开它们；
+   整窗全屏时没有那排按钮，抽屉再顶到边上。 */
+.mv-queue{position:absolute;top:var(--mv-chrome-top);right:0;bottom:0;width:312px;display:flex;flex-direction:column;
   background:linear-gradient(to left,rgba(13,13,15,.97),rgba(13,13,15,.93));
-  border-left:1px solid rgba(255,255,255,.07);backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);
+  border-left:1px solid rgba(255,255,255,.07);border-top-left-radius:12px;
+  backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);
   transform:translateX(101%);transition:transform .3s cubic-bezier(.22,.7,.3,1);
   pointer-events:auto;z-index:6}
+.mv-root[data-fs="1"] .mv-queue{top:0;border-top-left-radius:0}
 .mv-queue[data-open="1"]{transform:translateX(0)}
-.mv-queue-head{display:flex;align-items:center;gap:8px;padding:18px 12px 10px 18px}
+.mv-queue-head{display:flex;align-items:center;gap:8px;padding:16px 12px 10px 18px}
 .mv-queue-title{font-size:13px;font-weight:600;letter-spacing:.02em}
 .mv-queue-count{font-size:11px;color:rgba(255,255,255,.42);font-variant-numeric:tabular-nums}
 .mv-queue-list{flex:1;min-height:0;overflow-y:auto;padding:2px 10px 18px}
@@ -1085,8 +1093,9 @@ export default function activate(folium) {
    *   · 点一行 = 切到那首（宿主换歌，这边跟着换 MV）。
    * ---------------------------------------------------------------- */
 
-  const thumbCache = new Map(); // songKey → { cover, official, bvid, missing }
-  let thumbToken = 0;
+  const thumbCache = new Map(); // songKey → { cover, official, bvid }
+  const thumbInFlight = new Set(); // 已经问出去还没回来的 key，别重复发
+  let thumbsRestored = false;
 
   function queueSnapshot() {
     try {
@@ -1120,13 +1129,61 @@ export default function activate(folium) {
     }
   }
 
+  /**
+   * 封面表落盘。
+   *
+   * 「这首歌配的是哪支 MV」基本不变，把「歌 → 封面地址」记下来，下次开播放列表
+   * 直接就是有图的状态 —— 不用再等一轮搜索 + 一轮图床。这是「打开就看得见」的关键。
+   */
+  let thumbSaveTimer = 0;
+  function persistThumbs() {
+    if (thumbSaveTimer) clearTimeout(thumbSaveTimer);
+    thumbSaveTimer = setTimeout(() => {
+      thumbSaveTimer = 0;
+      const entries = [...thumbCache.entries()].slice(-200);
+      Promise.resolve(folium.storage.set('thumbs', Object.fromEntries(entries))).catch(() => {});
+    }, 800);
+  }
+
+  function restoreThumbs() {
+    if (thumbsRestored) return;
+    thumbsRestored = true;
+    Promise.resolve(folium.storage.get('thumbs'))
+      .then((saved) => {
+        if (!saved || typeof saved !== 'object') return;
+        let added = 0;
+        for (const [key, value] of Object.entries(saved)) {
+          if (!value || !value.cover || thumbCache.has(key)) continue;
+          thumbCache.set(key, {
+            cover: String(value.cover),
+            official: Number(value.official) || 0,
+            bvid: String(value.bvid || ''),
+          });
+          added += 1;
+        }
+        if (!added) return;
+        // 恢复是异步的，列表可能已经画好了：把还在页面上的行改成有图的版本。
+        for (const row of queueList.querySelectorAll('.mv-qrow')) {
+          applyThumb(row, row.getAttribute('data-key') || '');
+        }
+      })
+      .catch(() => {});
+  }
+
   async function loadThumbs(pending) {
-    if (!pending.length) return;
-    const token = ++thumbToken;
+    const ask = [];
+    for (const entry of pending) {
+      if (!entry || !entry.key) continue;
+      if (thumbCache.has(entry.key) || thumbInFlight.has(entry.key)) continue;
+      thumbInFlight.add(entry.key);
+      ask.push(entry);
+    }
+    if (!ask.length) return;
+
     let result = null;
     try {
       result = await folium.rpc.call('mvPreview', {
-        items: pending.map((entry) => ({
+        items: ask.slice(0, 8).map((entry) => ({
           key: entry.key,
           title: entry.title,
           artist: entry.artist,
@@ -1135,26 +1192,62 @@ export default function activate(folium) {
       });
     } catch (err) {
       log.info('MV 影院：播放列表缩略图没拿到', String((err && err.message) || err));
+      for (const entry of ask) thumbInFlight.delete(entry.key);
       return;
     }
-    if (token !== thumbToken) return;
 
     const rows = Array.isArray(result && result.results) ? result.results : [];
     for (const item of rows) {
       if (!item || !item.key) continue;
+      // 没搜到也落一条空记录：这一轮就不再为它反复发请求了。
       thumbCache.set(item.key, {
         cover: item.cover || '',
         official: Number(item.official) || 0,
         bvid: item.bvid || '',
-        missing: !item.cover,
       });
     }
+    for (const entry of ask) thumbInFlight.delete(entry.key);
+
     // 长会话里别把整张表都留着
     while (thumbCache.size > 300) thumbCache.delete(thumbCache.keys().next().value);
+    persistThumbs();
     // 只更新还活着的那些行
     for (const row of queueList.querySelectorAll('.mv-qrow')) {
       applyThumb(row, row.getAttribute('data-key') || '');
     }
+  }
+
+  /**
+   * 预热：进影院 / 换歌时先把队列前几首的封面对下来。
+   *
+   * 用户真正去点「播放列表」的那一刻，图已经躺在缓存里了，拉开就是有图的列表；
+   * 只预热前 4 首（够铺满一屏），免得一进影院就朝 B 站打一串搜索。
+   */
+  function warmThumbs() {
+    restoreThumbs();
+    const snap = queueSnapshot();
+    if (!snap) return;
+    const hostIndex = Number.isFinite(snap.currentIndex) ? snap.currentIndex : 0;
+    const currentIndex = Number.isFinite(state.queueIndex) ? state.queueIndex : hostIndex;
+    const currentKey = state.song ? songKey(state.song) : '';
+    const pending = [];
+    for (const item of snap.items) {
+      const song = item && item.song;
+      if (!song) continue;
+      const key = songKey(song);
+      // 列表里当前那一行、以及屏幕上演的那首，封面手上就有，不用去问。
+      if (Number(item.index) === currentIndex) continue;
+      if (currentKey && key === currentKey) continue;
+      if (thumbCache.has(key) || thumbInFlight.has(key)) continue;
+      pending.push({
+        key,
+        title: songTitleOf(song),
+        artist: songArtistOf(song),
+        durationMs: songDurationSec(song) * 1000,
+      });
+      if (pending.length >= 4) break;
+    }
+    void loadThumbs(pending);
   }
 
   /* ---------------------------------------------------------------- *
@@ -1210,6 +1303,7 @@ export default function activate(folium) {
       const img = document.createElement('img');
       img.alt = '';
       img.loading = 'lazy';
+      img.decoding = 'async';
       img.referrerPolicy = 'no-referrer'; // B 站图床认 Referer，一律不带
       if (item.cover) img.setAttribute('src', item.cover);
       thumb.appendChild(img);
@@ -1224,6 +1318,8 @@ export default function activate(folium) {
       meta.className = 'mv-srow-meta';
       const parts = [item.author || '', item.duration || ''];
       if (item.official) parts.push('官方');
+      // 十几秒的片段照样列出来，但标一下 —— 用户自己愿意点才点。
+      if (item.short) parts.push('片段');
       if (Number.isFinite(item.score)) parts.push(`匹配 ${item.score}`);
       meta.textContent = parts.filter(Boolean).join(' · ');
       body.appendChild(name);
@@ -1300,6 +1396,7 @@ export default function activate(folium) {
   }
 
   function renderQueue() {
+    restoreThumbs(); // 先把上次存下来的封面认回来（异步，回来后会自己刷新已画的行）
     // 抽屉没开就不画：换歌时会调到这里，没必要为看不见的列表发请求。
     if (!state.queueOpen) return;
 
@@ -1335,6 +1432,8 @@ export default function activate(folium) {
       const isCurrent = Number.isFinite(currentIndex)
         ? Number(item.index) === currentIndex
         : key === currentKey;
+      // 屏幕上演的那首（state.song）就是它自己：封面手上就有，别再搜一遍。
+      const isPlaying = isCurrent || (Boolean(currentKey) && key === currentKey);
 
       const row = document.createElement('button');
       row.type = 'button';
@@ -1343,7 +1442,7 @@ export default function activate(folium) {
       row.setAttribute('data-current', isCurrent ? '1' : '0');
 
       // 正在播的这首不用再搜：手上就有它的 MV 封面（可能就是用户手动挑过的那个）。
-      if (isCurrent && state.info && state.info.cover && !thumbOf(key)) {
+      if (isPlaying && state.info && state.info.cover && !thumbOf(key)) {
         thumbCache.set(key, {
           cover: state.info.cover,
           official: state.info.official || 0,
@@ -1356,6 +1455,8 @@ export default function activate(folium) {
       const img = document.createElement('img');
       img.alt = '';
       img.loading = 'lazy';
+      // 解码放到别的线程：十几张图一起进可视区时，别让主线程卡一下。
+      img.decoding = 'async';
       // B 站图床认 Referer：从别的站点引用会 403，所以一律不带 Referer。
       img.referrerPolicy = 'no-referrer';
       const cachedThumb = thumbOf(key);
@@ -1391,7 +1492,7 @@ export default function activate(folium) {
       }
 
       if (cachedThumb) applyThumb(row, key);
-      else if (!isCurrent && pending.length < 8) {
+      else if (!isPlaying && pending.length < 8) {
         pending.push({
           key,
           title: songTitleOf(song),
@@ -1565,6 +1666,11 @@ export default function activate(folium) {
   function errorText(code) {
     const raw = String(code || '');
     if (/search-empty/.test(raw)) return 'B 站没搜到相关的视频。可以换个说法，或者干脆输「歌名 + MV」。';
+    // 分P投稿的 P1 经常只有十几秒（预告 / 切片），这种一律不算 MV。
+    if (/only-short-clips/.test(raw)) {
+      return '搜到的都只有十几秒（分P里的预告、切片之类），没有完整的 MV。换个关键词试试，比如「歌名 歌手 MV」。';
+    }
+    if (/too-short/.test(raw)) return '这一支只有十几秒，不是完整的 MV。换下面一个候选试试。';
     if (/no-candidate|no-playable-url/.test(raw)) return '搜到了，但没有能播的源（可能被版权或地区限制）。试试换一个候选。';
     if (/search--412/.test(raw)) return '被 B 站的风控拦了一下。过一会儿再点，或者在设置里扫码登录（登录态下风控更宽松）。';
     if (/bad-json|http-|bili-timeout|ECONN|ENOTFOUND|socket/i.test(raw)) {
@@ -1597,6 +1703,7 @@ export default function activate(folium) {
       const metaLine = document.createElement('div');
       metaLine.className = 'mv-cand-meta';
       const parts = [item.author || '', item.duration ? String(item.duration) : ''];
+      if (item.short) parts.push('片段');
       if (Number.isFinite(item.score)) parts.push(`匹配 ${item.score}`);
       metaLine.textContent = parts.filter(Boolean).join(' · ');
       body.appendChild(name);
@@ -1835,8 +1942,10 @@ export default function activate(folium) {
     });
 
     kickoff();
+    syncChromeTop(); // 先量一下窗口右上角那簇按钮多高，抽屉好让开
     if (settings().pauseMusic) pauseHost();
     applyVolume();
+    warmThumbs(); // 队列前几首的封面在后台先拿，等用户点开列表时不用再等
 
     const cached = resolvedCache.get(songKey(song));
     if (cached) {
@@ -1867,6 +1976,7 @@ export default function activate(folium) {
     if (settings().pauseMusic) pauseHost();
     applyVolume();
     renderQueue();
+    warmThumbs(); // 下一首的封面顺手先备着，播放列表拉开就是有图的
 
     const cached = resolvedCache.get(songKey(song));
     if (cached) {
@@ -1963,6 +2073,38 @@ export default function activate(folium) {
 
   /* ---- 整窗全屏 ---- */
 
+  /**
+   * 量出「右上角那簇窗口按钮」占了多高。
+   *
+   * 宿主是自绘标题栏，全屏 / 最小化 / 关闭那几个按钮浮在页面右上角，和我们的抽屉
+   * 抢同一块地方。它们的高度会随版本和平台变，写死像素迟早对不齐，所以直接扫一遍
+   * 贴在顶边、靠右边的按钮，取最下面那条边，抽屉从那下面开始画。
+   * 找不到（结构变了、或者按钮压根不渲染）就退回 CSS 里的保守值。
+   */
+  function measureChromeTop() {
+    let bottom = 0;
+    try {
+      const width = window.innerWidth;
+      for (const node of document.querySelectorAll('button')) {
+        if (root.contains(node)) continue; // 只找宿主的，别把自己的按钮算进去
+        const rect = node.getBoundingClientRect();
+        if (!rect.width || !rect.height) continue;
+        if (rect.top > 10) continue; // 贴着顶边
+        if (rect.right < width - 300) continue; // 靠右边那一簇
+        bottom = Math.max(bottom, rect.bottom);
+      }
+    } catch {
+      /* 量不到就用兜底值 */
+    }
+    return bottom > 16 ? Math.round(bottom) + 8 : 52;
+  }
+
+  /** 把量到的值写给 CSS（抽屉的 top 用它）。整窗全屏时没有那排按钮，归零。 */
+  function syncChromeTop() {
+    const value = state.windowFullscreen ? 0 : measureChromeTop();
+    root.style.setProperty('--mv-chrome-top', `${value}px`);
+  }
+
   /** 窗口现在是不是全屏：优先问主进程，问不到再看 HTML 全屏。 */
   async function readHostFullscreen() {
     try {
@@ -1981,6 +2123,7 @@ export default function activate(folium) {
    */
   function applyFullscreenChrome() {
     root.setAttribute('data-fs', state.windowFullscreen ? '1' : '0');
+    syncChromeTop();
     if (!state.windowFullscreen) return;
     state.fullscreenGraceUntil = Date.now() + 600;
     if (video.paused) return; // 暂停时控件本来就在，别收
@@ -2391,6 +2534,13 @@ export default function activate(folium) {
   } catch {
     /* 老宿主没有这条事件 */
   }
+
+  // 窗口尺寸 / 缩放一变，右上角那簇按钮的位置也跟着变：抽屉起点重新量一次。
+  const onWindowResize = () => {
+    if (state.open) syncChromeTop();
+  };
+  window.addEventListener('resize', onWindowResize);
+  unsubscribers.push(() => window.removeEventListener('resize', onWindowResize));
 
   /* ---- 命令面板 ---- */
 

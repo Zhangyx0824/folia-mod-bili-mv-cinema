@@ -388,6 +388,11 @@ function installGlobals(window) {
   assert.equal(calls.fullscreen, 1, '全屏要交给宿主窗口，不是 DOM requestFullscreen');
   assert.equal(root.getAttribute('data-fs'), '1');
   assert.equal(root.getAttribute('data-idle'), '1', '进全屏后标题与控制条要收起来');
+  assert.equal(
+    root.style.getPropertyValue('--mv-chrome-top'),
+    '0px',
+    '整窗全屏没有右上角按钮，抽屉可以顶到边上',
+  );
 
   // 第一次 Esc 只退全屏，影院还在
   window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -428,12 +433,22 @@ function installGlobals(window) {
   await flush(4);
   const panel = root.querySelector('.mv-queue');
   assert.equal(panel.getAttribute('data-open'), '1', '播放列表要能拉开');
+  assert.ok(
+    parseInt(root.style.getPropertyValue('--mv-chrome-top'), 10) >= 20,
+    '抽屉要往下让开窗口右上角的按钮（全屏 / 最小化 / 关闭）',
+  );
   const rows = [...panel.querySelectorAll('.mv-qrow')];
   assert.equal(rows.length, 3, '队列里有三首就要列三行');
   assert.equal(rows[0].getAttribute('data-current'), '1', '当前这首要标出来');
-  const previewCall = calls.rpc.find((call) => call.name === 'mvPreview');
-  assert.ok(previewCall, '要给看得见的行去要 MV 封面');
-  assert.equal(previewCall.payload.items.length, 2, '当前这首不用查，其余两首一批问');
+  const previewCalls = calls.rpc.filter((call) => call.name === 'mvPreview');
+  assert.ok(previewCalls.length, '要给看得见的行去要 MV 封面');
+  // 进影院时会先预热一批，拉开列表时再补一批：合起来看问过哪些歌。
+  const askedKeys = previewCalls.flatMap((call) => (call.payload.items || []).map((item) => item.key));
+  assert.ok(askedKeys.includes(`稻香\u241F周杰伦`), '还没封面的行要去问一次');
+  assert.ok(!askedKeys.includes(`晴天\u241F周杰伦`), '列表里当前那一行不用查，它手上就有封面');
+  for (const call of previewCalls) {
+    assert.ok((call.payload.items || []).length <= 8, '一次最多问 8 首，别把整个队列都打出去');
+  }
   const thumbs = rows.map((row) => row.querySelector('img').getAttribute('src'));
   assert.ok(
     thumbs.some((src) => String(src).includes('hdslb.com')),

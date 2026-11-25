@@ -1,14 +1,19 @@
 # 上架记录 · MV 影院 bili-mv-cinema
 
-## 当前状态（v1.3.0）
+## 当前状态（v1.4.0）
 
 | 项 | 状态 |
 |---|---|
-| 版本 | **1.3.0**（未提交） |
+| 版本 | **1.4.0**（未提交） |
 | 代码 | `bili-mv-cinema/` · `node test/smoke.mjs` 全绿 |
 | 预览图 | `bili-mv-cinema/preview.jpg`（真 B 站 MV 帧 + 模组真实 DOM 截图，`node test/build_preview.mjs` 可复现） |
 | 仓库 | 待建：`git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git` |
-| 剩下的事 | 建空仓 → push `main` + tag `v1.3.0` → 提上架 issue |
+| 剩下的事 | push `main` + tag `v1.4.0` → 提上架 issue |
+
+### v1.4.0 改了什么
+
+- **换源**：控制条「列表」旁边多一个「换源」（`S`）。抽屉里列同一首歌的其他 MV 投稿（封面 / UP 主 / 时长 / 匹配分，正在看的那支标「正在看」），点一支就按 bvid 直接换过去；也能自己搜别的关键词。挑中的按这首歌记住，下次优先用。参考 `bili-mv-window` 的候选选择，但摆在播放器自己的抽屉里，不弹独立窗口。
+- **定位到当前**：播放列表标题栏加准星按钮，一点滚到正在看的那首并闪一下；打开列表时也自动落在那一行。
 
 ### v1.3.0 改了什么
 
@@ -50,8 +55,8 @@
    ```bash
    cd ~/folia-mod-bili-mv-cinema
    git init && git add -A
-   git commit -m "feat: MV 影院 v1.3.0 — 列表就地播放，去掉歌词与弹幕"
-   git tag v1.3.0
+   git commit -m "feat: MV 影院 v1.4.0 — 换源 + 定位到当前"
+   git tag v1.4.0
    git branch -M main
    git remote add origin git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git
    git push -u origin main --tags
@@ -61,7 +66,7 @@
 
    - `mod-id`: `bili-mv-cinema`
    - `repo`: `Zhangyx0824/folia-mod-bili-mv-cinema`
-   - `ref`: `v1.3.0`
+   - `ref`: `v1.4.0`
    - 简介与截图用上面的自述 + `preview.jpg`
 
    审核 CI 会给通过的版本打 `signed` 标签，随后出现在模组市场。

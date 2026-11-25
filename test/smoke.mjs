@@ -183,6 +183,31 @@ function makeHost({ minor = 9, resolveResult = OK_RESULT, song = SONG } = {}) {
         calls.rpc.push({ name, payload });
         if (name === 'resolveMv') return resolveResult;
         if (name === 'biliStatus') return { ok: true, loggedIn: true, uname: 'tester', vip: false };
+        if (name === 'searchCandidates') {
+          return {
+            ok: true,
+            keyword: payload.query,
+            candidates: [
+              {
+                bvid: 'BV1oo411c7mF',
+                title: '周杰伦 - 晴天（官方 MV）',
+                author: '周杰伦',
+                cover: 'https://i0.hdslb.com/bfs/archive/alt.jpg',
+                duration: '4:29',
+                score: 92,
+                official: 2,
+              },
+              {
+                bvid: 'BV1pp411c7mG',
+                title: '晴天 现场版',
+                author: '某电视台',
+                cover: '',
+                duration: '3:10',
+                score: 41,
+              },
+            ],
+          };
+        }
         if (name === 'mvPreview') {
           return {
             ok: true,
@@ -532,6 +557,110 @@ function installGlobals(window) {
   if (typeof dispose === 'function') dispose();
 
   console.log('✓ 老宿主：secret 字段自动隐藏，其余功能照常');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 4：换源（同一首歌换另一支 MV）+ 播放列表定位到当前
+ * ------------------------------------------------------------------ */
+
+{
+  const { window, folium, calls } = makeHost();
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  const bar = window.document.getElementById('bar');
+  calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+  const overlayContainer = window.document.createElement('div');
+  window.document.body.appendChild(overlayContainer);
+  calls.registered.layers[0].mount(overlayContainer, {});
+
+  bar.querySelector('button').click();
+  await flush();
+
+  const root = overlayContainer.querySelector('.mv-root');
+  const queuePanel = root.querySelector('.mv-queue:not(.mv-src)');
+  const srcPanel = root.querySelector('.mv-src');
+  const video = root.querySelector('video');
+
+  // 1. 播放列表：标题栏上有「定位到正在看的这首」
+  const locate = queuePanel.querySelector('.mv-btn[title="定位到正在看的这首"]');
+  assert.ok(locate, '播放列表要能一键定位到正在看的那首');
+
+  root.querySelector('.mv-btn[title^="播放列表"]').click();
+  await flush(3);
+  assert.equal(queuePanel.getAttribute('data-open'), '1');
+  assert.equal(root.getAttribute('data-side'), '1', '抽屉拉开时控件要让出右边');
+
+  const currentRow = queuePanel.querySelector('.mv-qrow[data-current="1"]');
+  assert.ok(currentRow, '当前这首要高亮');
+  locate.click();
+  await flush(2);
+  assert.equal(currentRow.getAttribute('data-flash'), '1', '定位之后要闪一下，眼睛才跟得上');
+
+  // 2. 换源：列表旁边那个按钮，点开是同一首歌的其他 MV
+  const switchBtn = root.querySelector('.mv-btn[title^="换一个 MV 源"]');
+  assert.ok(switchBtn, '控制条上要有换源按钮');
+  switchBtn.click();
+  await flush(3);
+  assert.equal(srcPanel.getAttribute('data-open'), '1', '换源抽屉要能拉开');
+  assert.equal(queuePanel.getAttribute('data-open'), '0', '两个抽屉同一块地方，不能叠着');
+  assert.equal(root.getAttribute('data-side'), '1', '抽屉换了一个，控件还在右边让位');
+
+  const firstRows = [...srcPanel.querySelectorAll('.mv-srow')];
+  assert.equal(firstRows.length, 1, '手上只有一个候选就先列一个');
+  assert.equal(firstRows[0].getAttribute('data-current'), '1', '正在看的这支要标出来');
+  assert.ok(firstRows[0].querySelector('.mv-srow-now'), '要有「正在看」的字样');
+
+  // 3. 换个关键词重搜，从结果里挑另一支
+  const srcInput = srcPanel.querySelector('input');
+  srcInput.value = '晴天 MV';
+  srcInput.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await flush(4);
+
+  const searchCall = calls.rpc.find((call) => call.name === 'searchCandidates');
+  assert.ok(searchCall, '换源面板要能自己搜');
+  assert.equal(searchCall.payload.query, '晴天 MV');
+  assert.equal(searchCall.payload.artist, '周杰伦', '搜索时带上歌手名，命中率更高');
+
+  const rowsAfter = [...srcPanel.querySelectorAll('.mv-srow')];
+  assert.equal(rowsAfter.length, 3, '正在看的那支补在最前面，再加两条搜索结果');
+  assert.equal(rowsAfter[0].getAttribute('data-current'), '1');
+
+  const resolveBefore = calls.rpc.filter((call) => call.name === 'resolveMv').length;
+  const otherRow = rowsAfter.find((row) => row.getAttribute('data-bvid') === 'BV1oo411c7mF');
+  assert.ok(otherRow, '搜索结果里要有另一支可选');
+  otherRow.click();
+  await flush(4);
+
+  const picked = calls.rpc.filter((call) => call.name === 'resolveMv');
+  assert.equal(picked.length, resolveBefore + 1, '挑一支就取一次流');
+  assert.equal(picked.at(-1).payload.bvid, 'BV1oo411c7mF', '要按挑中的那支的 bvid 取流');
+  assert.equal(calls.queue, 0, '换源同样不动宿主，别把 MV 页顶掉');
+  assert.equal(srcPanel.getAttribute('data-open'), '1', '换完面板还开着，方便再换一支');
+  assert.equal(root.getAttribute('data-shown'), '1', 'MV 页要一直在');
+
+  // 4. S 键开合，Esc 先收面板，再按一次才退出
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await flush(2);
+  assert.equal(srcPanel.getAttribute('data-open'), '0', 'Esc 先收换源面板');
+  assert.equal(root.getAttribute('data-shown'), '1', '收面板不该退出影院');
+
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 's', bubbles: true }));
+  await flush(2);
+  assert.equal(srcPanel.getAttribute('data-open'), '1', 'S 键也能开合换源面板');
+
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await flush(2);
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await flush(4);
+  assert.equal(root.getAttribute('data-shown'), '0', '再按一次退出影院');
+  assert.ok(!String(video.src).includes('/s/vtoken'), '退出要卸掉视频源');
+
+  if (typeof dispose === 'function') dispose();
+
+  console.log('✓ 换源：列候选 → 自己搜 → 挑一支直接播；播放列表能定位到当前');
 }
 
 console.log('\n全部通过。');

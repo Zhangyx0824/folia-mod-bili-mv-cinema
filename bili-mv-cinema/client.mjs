@@ -47,6 +47,12 @@ const ICON_REPLAY = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none"
 
 const ICON_LIST = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11M4 12h11M4 17h7"/><path d="M18.5 8.6v7.2c0 .5.6.8 1 .5l2.4-3.6a.6.6 0 000-.6l-2.4-3.6c-.4-.3-1 0-1 .5z" fill="currentColor" stroke="none"/></svg>`;
 
+/** 换源：两条反向的箭头，意思是「换一支 MV」 */
+const ICON_SWITCH = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8.5h12.5"/><path d="M13.5 5.5l3 3-3 3"/><path d="M20 15.5H7.5"/><path d="M10.5 12.5l-3 3 3 3"/></svg>`;
+
+/** 定位到正在看的那首 */
+const ICON_TARGET = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6.6"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/><path d="M12 2.6v2.6M12 18.8v2.6M2.6 12h2.6M18.8 12h2.6"/></svg>`;
+
 /* ------------------------------------------------------------------ *
  * 样式（全部作用在自己这棵树上，shadow root 里也不会串出去）
  * ------------------------------------------------------------------ */
@@ -194,9 +200,36 @@ const CSS = `
 @keyframes mvbars{0%,100%{height:3px}50%{height:11px}}
 .mv-qempty{padding:18px 12px;font-size:12px;line-height:1.7;color:rgba(255,255,255,.42)}
 
-/* 播放列表拉开时：控件让出右边那条 */
-.mv-root[data-queue="1"] .mv-top{right:312px}
-.mv-root[data-queue="1"] .mv-bottom{right:312px}
+/* 定位到当前：滚过去之后闪一下，眼睛才跟得上（没有这一步经常「滚了但没看见」） */
+.mv-qrow[data-flash="1"]{animation:mvqflash 1.15s ease-out}
+@keyframes mvqflash{0%{background:rgba(251,114,153,.46)}100%{background:rgba(251,114,153,.14)}}
+
+/* 换源：同一个抽屉样式，里面列同一首歌的其他 MV 投稿 */
+.mv-src-search{display:flex;gap:6px;padding:0 12px 10px 14px}
+.mv-src-search .mv-input{height:30px;font-size:12px}
+.mv-src-list{flex:1;min-height:0;overflow-y:auto;padding:2px 10px 14px;display:flex;flex-direction:column;gap:2px}
+.mv-src-list::-webkit-scrollbar{width:6px}
+.mv-src-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:3px}
+.mv-srow{display:flex;gap:9px;width:100%;align-items:center;padding:7px 8px;border:0;border-radius:9px;
+  background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background .14s}
+.mv-srow:hover{background:rgba(255,255,255,.07)}
+.mv-srow[data-current="1"]{background:rgba(251,114,153,.14)}
+.mv-srow-thumb{position:relative;width:76px;height:43px;border-radius:6px;overflow:hidden;flex:none;
+  background:rgba(255,255,255,.06)}
+.mv-srow-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.mv-srow-body{min-width:0;flex:1}
+.mv-srow-title{font-size:12px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+  overflow:hidden}
+.mv-srow[data-current="1"] .mv-srow-title{color:#ffc2d4}
+.mv-srow-meta{margin-top:2px;font-size:10.5px;color:rgba(255,255,255,.42);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.mv-srow-now{flex:none;font-size:9.5px;font-weight:700;letter-spacing:.04em;padding:2px 5px;border-radius:4px;
+  background:rgba(251,114,153,.88);color:#fff}
+.mv-src-note{padding:14px;font-size:11.5px;line-height:1.75;color:rgba(255,255,255,.42)}
+
+/* 右侧抽屉（播放列表 / 换源）拉开时：控件让出右边那条 */
+.mv-root[data-side="1"] .mv-top{right:312px}
+.mv-root[data-side="1"] .mv-bottom{right:312px}
 
 /* 控件自动隐藏 */
 .mv-root[data-idle="1"] .mv-top,.mv-root[data-idle="1"] .mv-bottom{opacity:0;pointer-events:none}
@@ -405,6 +438,8 @@ export default function activate(folium) {
      * null = 没点过列表，跟宿主当前的歌走。
      */
     queueIndex: null,
+    /** 换源抽屉开着没（跟播放列表互斥） */
+    sourceOpen: false,
     generation: 0,
     /** 窗口当前是不是整窗全屏（跟应用右上角那个按钮同一个状态） */
     windowFullscreen: false,
@@ -706,6 +741,17 @@ export default function activate(folium) {
   btnQueue.innerHTML = `${ICON_LIST}<span>列表</span>`;
   controls.appendChild(btnQueue);
 
+  /**
+   * 换源：换的是**同一首歌的另一支 MV**（B 站上同一首歌往往有好几个投稿：
+   * 官方号、节目片段、饭制）。挑片算法只保证「大概率对」，挑错了总得有个地方改。
+   */
+  const btnSwitch = document.createElement('button');
+  btnSwitch.type = 'button';
+  btnSwitch.className = 'mv-btn tall';
+  btnSwitch.title = '换一个 MV 源（S）';
+  btnSwitch.innerHTML = `${ICON_SWITCH}<span>换源</span>`;
+  controls.appendChild(btnSwitch);
+
   const qualityWrap = document.createElement('div');
   qualityWrap.className = 'mv-wrap-menu';
   const btnQuality = document.createElement('button');
@@ -763,6 +809,15 @@ export default function activate(folium) {
   queueCount.className = 'mv-queue-count';
   const queueSpacer = document.createElement('div');
   queueSpacer.className = 'mv-spacer';
+  /** 定位：列表长起来之后一路往下滚，回头找不到「正在看的是哪首」，按一下就跳回去。 */
+  const btnLocate = document.createElement('button');
+  btnLocate.type = 'button';
+  btnLocate.className = 'mv-btn ghost round';
+  btnLocate.style.width = '28px';
+  btnLocate.style.height = '28px';
+  btnLocate.title = '定位到正在看的这首';
+  btnLocate.innerHTML = ICON_TARGET;
+
   const btnQueueClose = document.createElement('button');
   btnQueueClose.type = 'button';
   btnQueueClose.className = 'mv-btn ghost round';
@@ -773,6 +828,7 @@ export default function activate(folium) {
   queueHead.appendChild(queueTitle);
   queueHead.appendChild(queueCount);
   queueHead.appendChild(queueSpacer);
+  queueHead.appendChild(btnLocate);
   queueHead.appendChild(btnQueueClose);
 
   const queueList = document.createElement('div');
@@ -781,6 +837,53 @@ export default function activate(folium) {
   queuePanel.appendChild(queueHead);
   queuePanel.appendChild(queueList);
   root.appendChild(queuePanel);
+
+  /* --- 换源（右侧抽屉，跟播放列表同一个位置：同时只开一个） --- */
+  const srcPanel = document.createElement('aside');
+  srcPanel.className = 'mv-queue mv-src';
+  srcPanel.setAttribute('data-open', '0');
+
+  const srcHead = document.createElement('div');
+  srcHead.className = 'mv-queue-head';
+  const srcTitle = document.createElement('div');
+  srcTitle.className = 'mv-queue-title';
+  srcTitle.textContent = '换个 MV';
+  const srcCount = document.createElement('div');
+  srcCount.className = 'mv-queue-count';
+  const srcSpacer = document.createElement('div');
+  srcSpacer.className = 'mv-spacer';
+  const btnSrcClose = document.createElement('button');
+  btnSrcClose.type = 'button';
+  btnSrcClose.className = 'mv-btn ghost round';
+  btnSrcClose.style.width = '28px';
+  btnSrcClose.style.height = '28px';
+  btnSrcClose.title = '收起（S）';
+  btnSrcClose.innerHTML = ICON_CLOSE;
+  srcHead.appendChild(srcTitle);
+  srcHead.appendChild(srcCount);
+  srcHead.appendChild(srcSpacer);
+  srcHead.appendChild(btnSrcClose);
+
+  const srcSearch = document.createElement('div');
+  srcSearch.className = 'mv-src-search';
+  const srcInput = document.createElement('input');
+  srcInput.className = 'mv-input';
+  srcInput.type = 'text';
+  srcInput.placeholder = '换个关键词，比如「歌名 歌手 MV」';
+  const btnSrcSearch = document.createElement('button');
+  btnSrcSearch.type = 'button';
+  btnSrcSearch.className = 'mv-btn tall compact';
+  btnSrcSearch.textContent = '搜';
+  srcSearch.appendChild(srcInput);
+  srcSearch.appendChild(btnSrcSearch);
+
+  const srcList = document.createElement('div');
+  srcList.className = 'mv-src-list';
+
+  srcPanel.appendChild(srcHead);
+  srcPanel.appendChild(srcSearch);
+  srcPanel.appendChild(srcList);
+  root.appendChild(srcPanel);
 
   /* ---------------------------------------------------------------- *
    * 播放器：源切换、同步、控件
@@ -1054,6 +1157,148 @@ export default function activate(folium) {
     }
   }
 
+  /* ---------------------------------------------------------------- *
+   * 换源：同一首歌的其他 MV 投稿
+   *
+   * 候选来自上一次 resolveMv 顺带返回的 candidates（头部 6 个），不够就自己搜。
+   * 点一个 = 记住（下次这首歌还用它）+ 直接按 bvid 取流，不重搜、不动宿主。
+   * ---------------------------------------------------------------- */
+
+  function renderSources() {
+    srcList.innerHTML = '';
+    const currentBvid = (state.info && state.info.bvid) || '';
+    let list = Array.isArray(state.candidates) ? state.candidates : [];
+
+    // 正在看的那支不一定还在候选里（手动挑过、或者按 bvid 直取过）：补一行在最前面，
+    // 否则用户看不出现在放的是哪一个，也没法确认「已经切过去了」。
+    if (currentBvid && !list.some((item) => item && item.bvid === currentBvid) && state.info) {
+      list = [
+        {
+          bvid: currentBvid,
+          title: state.info.title || currentBvid,
+          author: state.info.author || '',
+          cover: state.info.cover || '',
+          duration: '',
+          score: state.info.score,
+          official: state.info.official || 0,
+        },
+        ...list,
+      ];
+    }
+    srcCount.textContent = list.length ? `${list.length} 个` : '';
+
+    if (!list.length) {
+      const note = document.createElement('div');
+      note.className = 'mv-src-note';
+      note.textContent = '手上还没有别的候选。上面换个关键词搜一下，比如「歌名 歌手 MV」。';
+      srcList.appendChild(note);
+      return;
+    }
+
+    for (const item of list) {
+      if (!item || !item.bvid) continue;
+      const isCurrent = item.bvid === currentBvid;
+
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'mv-srow';
+      row.setAttribute('data-current', isCurrent ? '1' : '0');
+      row.setAttribute('data-bvid', item.bvid);
+
+      const thumb = document.createElement('div');
+      thumb.className = 'mv-srow-thumb';
+      const img = document.createElement('img');
+      img.alt = '';
+      img.loading = 'lazy';
+      img.referrerPolicy = 'no-referrer'; // B 站图床认 Referer，一律不带
+      if (item.cover) img.setAttribute('src', item.cover);
+      thumb.appendChild(img);
+      row.appendChild(thumb);
+
+      const body = document.createElement('div');
+      body.className = 'mv-srow-body';
+      const name = document.createElement('div');
+      name.className = 'mv-srow-title';
+      name.textContent = item.title || item.bvid;
+      const meta = document.createElement('div');
+      meta.className = 'mv-srow-meta';
+      const parts = [item.author || '', item.duration || ''];
+      if (item.official) parts.push('官方');
+      if (Number.isFinite(item.score)) parts.push(`匹配 ${item.score}`);
+      meta.textContent = parts.filter(Boolean).join(' · ');
+      body.appendChild(name);
+      body.appendChild(meta);
+      row.appendChild(body);
+
+      if (isCurrent) {
+        const now = document.createElement('span');
+        now.className = 'mv-srow-now';
+        now.textContent = '正在看';
+        row.appendChild(now);
+      }
+
+      row.addEventListener('click', () => {
+        if (isCurrent) {
+          folium.ui.toast('现在放的就是这一支', { durationMs: 1400 });
+          return;
+        }
+        pickSource(item);
+      });
+
+      srcList.appendChild(row);
+    }
+  }
+
+  /** 挑中一个候选：记下来（下次这首歌优先用它），再按 bvid 直接取流。 */
+  function pickSource(item) {
+    if (!item || !item.bvid) return;
+    if (state.song) {
+      pinned.set(songKey(state.song), item.bvid);
+      persistPinned();
+    }
+    void resolve({ bvid: item.bvid });
+  }
+
+  async function searchSources() {
+    const keyword = srcInput.value.trim();
+    if (!keyword) {
+      srcInput.focus();
+      return;
+    }
+    btnSrcSearch.disabled = true;
+    btnSrcSearch.textContent = '搜…';
+    srcCount.textContent = '搜索中';
+    let result = null;
+    try {
+      result = await folium.rpc.call('searchCandidates', {
+        query: keyword,
+        artist: songArtistOf(state.song),
+      });
+    } catch (err) {
+      result = { ok: false, error: String((err && err.message) || err) };
+    }
+    btnSrcSearch.disabled = false;
+    btnSrcSearch.textContent = '搜';
+    if (!state.open) return;
+
+    if (!result || !result.ok) {
+      srcCount.textContent = '';
+      srcList.innerHTML = '';
+      const note = document.createElement('div');
+      note.className = 'mv-src-note';
+      note.textContent = /search-empty|no-candidate/.test(String((result && result.error) || ''))
+        ? '这个关键词一条都没搜到。换个说法再试，比如「歌名 歌手 MV」。'
+        : `没能搜成（${(result && result.error) || '未知原因'}）。`;
+      srcList.appendChild(note);
+      return;
+    }
+
+    state.candidates = Array.isArray(result.candidates) ? result.candidates : [];
+    state.keyword = result.keyword || keyword;
+    searchInput.value = state.keyword; // 错误卡片上那个输入框也跟着同步
+    renderSources();
+  }
+
   function renderQueue() {
     // 抽屉没开就不画：换歌时会调到这里，没必要为看不见的列表发请求。
     if (!state.queueOpen) return;
@@ -1210,16 +1455,69 @@ export default function activate(folium) {
     else void resolve({});
   }
 
+  /** 两个抽屉共用右边那一条：谁开都让控件往左让 312px。 */
+  function syncSide() {
+    if (state.queueOpen || state.sourceOpen) root.setAttribute('data-side', '1');
+    else root.removeAttribute('data-side');
+  }
+
   function setQueueOpen(flag) {
     state.queueOpen = Boolean(flag);
+    if (state.queueOpen) {
+      // 同一块地方不叠两层：开列表就把换源收起来
+      state.sourceOpen = false;
+      srcPanel.setAttribute('data-open', '0');
+      btnSwitch.setAttribute('data-active', '0');
+    }
     queuePanel.setAttribute('data-open', state.queueOpen ? '1' : '0');
     btnQueue.setAttribute('data-active', state.queueOpen ? '1' : '0');
-    if (state.queueOpen) root.setAttribute('data-queue', '1');
-    else root.removeAttribute('data-queue');
+    syncSide();
     if (state.queueOpen) {
       renderQueue();
+      scrollToCurrent(false); // 拉开就落在正在看的那首上，不用自己往下翻
       poke(true);
     }
+  }
+
+  function setSourceOpen(flag) {
+    state.sourceOpen = Boolean(flag);
+    if (state.sourceOpen) {
+      state.queueOpen = false;
+      queuePanel.setAttribute('data-open', '0');
+      btnQueue.setAttribute('data-active', '0');
+    }
+    srcPanel.setAttribute('data-open', state.sourceOpen ? '1' : '0');
+    btnSwitch.setAttribute('data-active', state.sourceOpen ? '1' : '0');
+    syncSide();
+    if (state.sourceOpen) {
+      srcInput.value = state.keyword || '';
+      renderSources();
+      poke(true);
+    }
+  }
+
+  /**
+   * 定位到正在看的那首：滚到列表中间，再闪一下。
+   *
+   * 不用 scrollIntoView —— 它会把整个文档一起挪，宿主那边跟着抖；
+   * 这里只算行在列表里的偏移，动列表自己的 scrollTop。
+   */
+  function scrollToCurrent(smooth) {
+    const row = queueList.querySelector('.mv-qrow[data-current="1"]');
+    if (!row) return;
+    // 行的 offsetTop 是相对抽屉算的，要减掉列表自己的位置（头那一条）
+    const rowTop = (Number(row.offsetTop) || 0) - (Number(queueList.offsetTop) || 0);
+    const rowHeight = Number(row.offsetHeight) || 0;
+    const viewHeight = Number(queueList.clientHeight) || 0;
+    // 没有布局信息（jsdom）时算出 0，等于滚到顶，也不抛
+    const target = Math.max(0, rowTop - Math.max(0, viewHeight - rowHeight) / 2);
+    if (smooth && typeof queueList.scrollTo === 'function') {
+      queueList.scrollTo({ top: target, behavior: 'smooth' });
+    } else {
+      queueList.scrollTop = target;
+    }
+    row.setAttribute('data-flash', '1');
+    window.setTimeout(() => row.removeAttribute('data-flash'), 1200);
   }
 
   /** MV 放完：队列里还有下一首就接着放它的 MV（同样不动宿主）。 */
@@ -1359,6 +1657,7 @@ export default function activate(folium) {
     state.info = info;
     state.phase = 'loading';
     showLoadingCard('正在载入 MV…', '');
+    if (state.sourceOpen) renderSources(); // 「正在看」的标记要跟着换
 
     video.src = source.video;
     if (source.audio) {
@@ -1490,6 +1789,12 @@ export default function activate(folium) {
       const active = item.getAttribute('data-value') === (state.qualityOverride || settings().quality);
       item.setAttribute('data-active', active ? '1' : '0');
     }
+
+    // 换源面板列的就是这批候选（resolveMv 顺带返回的头部 6 个）。
+    // 按 bvid 直取时 main 那边没有候选表，别把手上这份冲掉 —— 不然换过去就回不来。
+    if (Array.isArray(info.candidates) && info.candidates.length) {
+      state.candidates = info.candidates;
+    }
   }
 
   /* ---- 打开 / 关闭 ---- */
@@ -1520,6 +1825,7 @@ export default function activate(folium) {
     state.enteredFullscreen = false;
     state.fullscreenGraceUntil = 0;
     setQueueOpen(false);
+    setSourceOpen(false);
 
     // 进来之前窗口可能已经是全屏了（用户自己按的右上角那个按钮）：只读一下，不接管。
     void readHostFullscreen().then((on) => {
@@ -1619,6 +1925,7 @@ export default function activate(folium) {
     hideCenter();
     clearMedia();
     setQueueOpen(false);
+    setSourceOpen(false);
     root.setAttribute('data-shown', '0');
     root.setAttribute('data-idle', '0');
     if (hideTimer) {
@@ -1727,11 +2034,18 @@ export default function activate(folium) {
       hideTimer = 0;
     }
     const shouldHide =
-      state.open && state.phase === 'playing' && !video.paused && !force && !state.queueOpen;
+      state.open &&
+      state.phase === 'playing' &&
+      !video.paused &&
+      !force &&
+      !state.queueOpen &&
+      !state.sourceOpen;
     if (!shouldHide) return;
     hideTimer = window.setTimeout(() => {
       hideTimer = 0;
-      if (state.open && !video.paused && !state.queueOpen) root.setAttribute('data-idle', '1');
+      if (state.open && !video.paused && !state.queueOpen && !state.sourceOpen) {
+        root.setAttribute('data-idle', '1');
+      }
     }, 2800);
   }
 
@@ -1759,6 +2073,12 @@ export default function activate(folium) {
       }
       if (typing) {
         event.target.blur();
+        return;
+      }
+      if (state.sourceOpen) {
+        setSourceOpen(false);
+        event.preventDefault();
+        event.stopPropagation();
         return;
       }
       if (state.queueOpen) {
@@ -1801,6 +2121,12 @@ export default function activate(folium) {
       event.stopPropagation();
       return;
     }
+    if (event.key === 's' || event.key === 'S') {
+      setSourceOpen(!state.sourceOpen);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
   }
 
   /* ---- 按钮 ---- */
@@ -1810,6 +2136,16 @@ export default function activate(folium) {
   btnPlay.addEventListener('click', () => toggle());
   btnQueue.addEventListener('click', () => setQueueOpen(!state.queueOpen));
   btnQueueClose.addEventListener('click', () => setQueueOpen(false));
+  btnLocate.addEventListener('click', () => scrollToCurrent(true));
+  btnSwitch.addEventListener('click', () => setSourceOpen(!state.sourceOpen));
+  btnSrcClose.addEventListener('click', () => setSourceOpen(false));
+  btnSrcSearch.addEventListener('click', () => void searchSources());
+  srcInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    event.stopPropagation();
+    void searchSources();
+  });
 
   bigPlay.addEventListener('click', () => {
     showBlocked(false);
@@ -1828,7 +2164,7 @@ export default function activate(folium) {
     if (!target) return;
     if (!state.open) return;
     // 点在控件、卡片、播放列表上：那是它们自己的事
-    if (target.closest('.mv-top, .mv-bottom, .mv-queue, .mv-center, .mv-login')) return;
+    if (target.closest('.mv-top, .mv-bottom, .mv-queue, .mv-center, .mv-login, .mv-src')) return;
     if (!video.getAttribute('src')) return; // 还没取到流：画面是黑的，点了也没意义
     toggle();
   });

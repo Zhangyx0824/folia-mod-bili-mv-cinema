@@ -1,14 +1,22 @@
 # 上架记录 · MV 影院 bili-mv-cinema
 
-## 当前状态（v1.6.0）
+## 当前状态（v1.7.0）
 
 | 项 | 状态 |
 |---|---|
-| 版本 | **v1.6.0**（审核整改 + 合并 v1.4.0 / v1.5.0 / v1.5.1 的全部更新，一次性重提） |
+| 版本 | **v1.7.0**（去掉行内 MV 图标：不再依赖宿主 DOM；顶栏让位改固定值） |
 | 代码 | `bili-mv-cinema/` · `node test/smoke.mjs` + `node test/unit.mjs` 全绿 |
 | 预览图 | `bili-mv-cinema/preview.jpg`（真 B 站 MV 帧 + 模组真实 DOM 截图，`node test/build_preview.mjs` 可复现） |
 | 仓库 | `git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git` |
-| 剩下的事 | push `main` + tag `v1.6.0` → 把上架 issue 的「版本」改成 `v1.6.0`，机器人重新检查 |
+| 剩下的事 | push `main` + tag `v1.7.0` → 把上架 issue 的「版本」改成 `v1.7.0`，机器人重新检查 |
+
+### v1.7.0 改了什么（对应第二轮审核意见）
+
+- **必须改 · 不再依赖宿主 DOM**：上一版往宿主搜索结果行、播放器侧栏队列行里插 MV 小图标，靠的是宿主的类名（`.search-row` / `.search-row-cover` / `.min-w-0.flex-1` / `span.truncate` / `.search-row-action`）与虚拟列表属性（`data-react-window-index`），还从 DOM 文本里读歌名歌手。这些是 Folia 界面的实现细节，不是 Folium 接口 —— 本版**把行内 MV 图标整条移除**（图标常量、设置项 `inlineButton`、`MutationObserver`、行标记与按钮注入全部删掉）。入口只保留两处：进度条右侧的 MV 按钮、命令面板「看这首歌的 MV」。
+- **必须改 · 顶栏让位不再扫描宿主按钮**：`measureWindowChrome()` 原来会遍历宿主所有 `button` 量右上角那簇的底边。本版删掉这段，改成 CSS 固定值 `--mv-chrome-top: 40px`（宿主顶栏 32px + 8px 间距），只作用在标题栏内容上，抽屉黑底仍然通顶。
+- **建议 · `folium.internals` 的迁移说明**：补时长 / 封面仍在只读地读 `folium.internals.stores.playback`，`folium: 1` 下允许；代码注释与 README 都注明 **Folium 2 会去掉 internals**，迁移到 `folium: 2` 时要改用公开接口（或退化成没有时长 / 封面）。
+- 测试：两个「行内图标」场景改成「宿主搜索行 / 侧栏队列行零操作」的断言（不插按钮、不留标记、改 DOM 无反应）；静态扫描新增 9 个宿主 DOM 字样与 `querySelectorAll('button')` 的禁令，并断言顶栏让位是固定 `40px`。
+- 预览图与 `mod.json` 描述同步去掉「行内 MV 图标」。
 
 ### v1.6.0 改了什么（对应审核意见）
 
@@ -40,7 +48,7 @@
 - **分P取正片、十几秒片段不参与挑选**：`view` 接口的 `data.cid` 只指向 P1，音乐区很多投稿的 P1 是十几秒预告、P2 才是整支 MV，照着 P1 取流就是「点进去十几秒就结束」。现在有 `pages` 时取时长最长的那一 P；整支都不足 20 秒的（预告 / 切片 / 试听）排序时整批沉底、取流时直接跳过，第一名取不到流就顺着候选往下试（最多 4 个），不再因为第一名是个片段就整次失败。候选里这类投稿会标「片段」。
 - **播放列表回到通顶**：上一版让抽屉给右上角窗口按钮让位（`--mv-chrome-top`），实测把标题栏挤到一条缝里，观感很差。这一版撤掉运行时测量，抽屉重新通顶；右上角那簇按钮偶尔叠在叉号上，可接受。
 - **封面改为可视区按需加载**：不再「拉开列表就搜一整条队列」，改成滚动到可视区附近（`IntersectionObserver`，下方预留一屏）才搜那一首的封面，一次只发 3 首、回来一批贴一批；还没轮到的行显示胶片格占位图标（内阴影描边，圆角不被切掉），图到了淡入。
-- **宿主列表里的 MV 图标**：搜索结果与播放器侧栏「播放列表」的每一行右侧多一个 MV 小图标，点了就地看这首的 MV，不动宿主播放、不切歌；侧栏那处用行上的 `data-react-window-index` 从宿主队列把时长/歌手补齐，虚拟列表复用行元素时按歌名 key 重挂。设置里可关（`inlineButton`）。
+- **宿主列表里的 MV 图标**（⚠️ **已在 v1.7.0 整条移除**，见上：靠宿主 DOM 类名定位，正式发布不能依赖。此处仅保留历史记录）：搜索结果与播放器侧栏「播放列表」的每一行右侧多一个 MV 小图标，点了就地看这首的 MV，不动宿主播放、不切歌；侧栏那处用行上的 `data-react-window-index` 从宿主队列把时长/歌手补齐，虚拟列表复用行元素时按歌名 key 重挂。设置里可关（`inlineButton`）。
 - **封面加载提速**：封面地址改成 B 站图床的缩略图（`@176w_100h_1c.webp`，78×44 的格子刚好 2 倍屏），体积小一个数量级；「歌 → 封面」落盘缓存，下次打开直接有图；进影院 / 换歌时先预取队列前 4 首（跳过正在播的那首），拉开列表时不用再等一轮搜索；主进程并发从 3 提到 4；`<img decoding="async">`。
 
 ### v1.3.0 改了什么
@@ -85,13 +93,13 @@
 ```bash
 cd ~/folia-mod-bili-mv-cinema
 git add -A
-git commit -m "fix: v1.6.0 — 移除宿主私有全屏通道、音量改存 folium.storage（审核整改）"
-git tag v1.6.0
+git commit -m "fix: v1.7.0 — 移除行内 MV 图标（不再依赖宿主 DOM）、顶栏让位改固定值（审核整改）"
+git tag v1.7.0
 git push origin main
-git push origin v1.6.0
+git push origin v1.7.0
 ```
 
-然后到 folium-compound 的收录 issue（#192）把正文「版本 / Version (tag or commit)」字段改成 `v1.6.0`，机器人会重新检查，维护者再审一次。
+然后到 folium-compound 的收录 issue（#192）把正文「版本 / Version (tag or commit)」字段改成 `v1.7.0`，机器人会重新检查，维护者再审一次。
 
 ## 四、后续可做
 
@@ -99,10 +107,18 @@ git push origin v1.6.0
 - 倍速播放（`video.playbackRate`）——需要先确认音频轨同步是否还稳。
 - 等宿主开放公开的整窗全屏接口后，把控制条上的全屏按钮接回来。
 
-## 五、给 folia-major 的需求文案（去掉按钮后按审核建议提交）
+## 五、给 folia-major 的需求文案（按审核建议提交）
 
-> 标题：[Feature] 请开放公开的整窗全屏接口（folium.ui）
+审核在两条意见里都建议「确实需要就去 folia-major 提需求」，这里合并成一条：
+
+> 标题：[Feature] 请开放公开的整窗全屏接口与歌曲行级按钮槽位（folium.ui）
 >
-> 背景：Folia 把整窗全屏放在主进程，preload 暴露的内部通道不属于 Folium 模组接口，模组直接调用会在收录审查中被拒；而 `document.documentElement.requestFullscreen()` 在这个窗口实测不生效，所以 MV 影院（bili-mv-cinema v1.6.0）已移除自己的全屏按钮，只能让用户去点应用右上角那个。
+> 背景：MV 影院（bili-mv-cinema）v1.7.0 按收录审查意见，移除了两类「靠宿主实现细节」的做法：
 >
-> 期望：在 `folium.ui` 下提供公开接口，例如 `folium.ui.setWindowFullscreen(boolean)` / `folium.ui.isWindowFullscreen()` / `folium.ui.onWindowFullscreenChanged(cb)`，并把对应的 `ui.windowFullscreen` 权限纳入 manifest 白名单。这样模组可以在自己的全屏页里正确进 / 退整窗全屏、同步窗口按钮位置，不必再碰内部通道。
+> 1. **整窗全屏**：Folia 把它放在主进程，preload 的内部通道不属于 Folium 接口，模组直接调用会在收录审查中被拒；而 `document.documentElement.requestFullscreen()` 在这个窗口实测不生效。
+> 2. **歌曲行级按钮**：原来靠宿主的行类名与虚拟列表属性定位、再往里插按钮，还要从 DOM 文本读歌名歌手；宿主一改版按钮就会消失或插错位置。本版已整条移除。
+>
+> 期望：
+>
+> - 在 `folium.ui` 下提供整窗全屏接口：`folium.ui.setWindowFullscreen(boolean)` / `folium.ui.isWindowFullscreen()` / `folium.ui.onWindowFullscreenChanged(cb)`，并把 `ui.windowFullscreen` 纳入 manifest 权限白名单。这样模组能在自己的全屏页里正确进 / 退整窗全屏、同步右上角按钮位置，不必再碰内部通道。
+> - 给歌曲行一个公开的「行级操作槽位」（例如 `folium.registries.songRowActions`，或像 `progressButtons` 那样的注册表）：让模组能在搜索结果 / 播放队列的每一行挂一个按钮，并直接拿到该行的公开 song 对象 —— 不依赖宿主类名，也不从 DOM 文本读歌名。

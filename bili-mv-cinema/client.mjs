@@ -31,8 +31,9 @@ const ICON_MV = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" str
 /** 封面还没到时的占位：一格胶片 + 播放三角。比一块灰要好认，也和 MV 按钮是同一套形状。 */
 const ICON_FRAME = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.6" y="4.8" width="18.8" height="14.4" rx="3.4"/><path d="M7.2 4.9v14.2M16.8 4.9v14.2" opacity=".5"/><path d="M10.7 9.5v5l4.1-2.5z" fill="currentColor" stroke="none"/></svg>`;
 
-/** 塞进宿主歌曲行里的那一个：跟行内的操作图标同一尺寸（16px） */
-const ICON_MV_ROW = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.4" y="5.2" width="19.2" height="13.6" rx="3"/><path d="M10 10.4v3.2l3.2-1.6z" fill="currentColor" stroke="none"/></svg>`;
+/* 行内 MV 图标已移除：往宿主歌曲列表里插按钮要认宿主的行结构、类名，还要从 DOM
+ * 文本里读歌名歌手，这些都是 Folia 界面的实现细节，不是 Folium 接口，宿主一改版
+ * 就会失效。入口保留进度条右侧的 MV 按钮与命令面板。 */
 
 const ICON_BACK = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>`;
 
@@ -184,9 +185,10 @@ const CSS = `
   transform:translateX(101%);transition:transform .3s cubic-bezier(.22,.7,.3,1);
   pointer-events:auto;z-index:6}
 .mv-queue[data-open="1"]{transform:translateX(0)}
-/* --mv-chrome-top 是运行时量出来的「宿主窗口按钮那一簇的底边 + 8px」，只作用在内容上 */
+/* 顶栏让位用固定值 40px（宿主顶栏 32px + 8px 间距），不扫描宿主 DOM —— 宿主的
+ * 类名与结构不属于 Folium 接口。只作用在标题栏内容上，抽屉黑底仍然通顶。 */
 .mv-queue-head{display:flex;align-items:center;gap:8px;
-  padding:var(--mv-chrome-top,16px) 12px 10px 18px}
+  padding:var(--mv-chrome-top,40px) 12px 10px 18px}
 .mv-queue-title{font-size:13px;font-weight:600;letter-spacing:.02em}
 .mv-queue-count{font-size:11px;color:rgba(255,255,255,.42);font-variant-numeric:tabular-nums}
 .mv-queue-list{flex:1;min-height:0;overflow-y:auto;padding:2px 10px 18px}
@@ -354,16 +356,6 @@ export default function activate(folium) {
       ),
     },
     {
-      key: 'inlineButton',
-      type: 'boolean',
-      defaultValue: true,
-      label: label('搜索列表 / 播放器队列里也放 MV 图标', 'MV icon inside song lists'),
-      description: label(
-        '在宿主的搜索结果、以及播放器侧栏「播放列表」的每一行右侧加一个小 MV 图标，点一下直接看这首的 MV（不动当前播放、不切歌）。关掉就只留进度条那个按钮。',
-        'Adds a small MV icon to each search-result and player-queue row, playing that song’s MV without changing the current track.',
-      ),
-    },
-    {
       key: 'quality',
       type: 'select',
       defaultValue: 'auto',
@@ -433,7 +425,6 @@ export default function activate(folium) {
       quality: qualityList.includes(raw.quality) ? raw.quality : 'auto',
       pauseMusic: raw.pauseMusic !== false,
       autoNext: raw.autoNext !== false,
-      inlineButton: raw.inlineButton !== false,
       volume: Number.isFinite(volume) ? clamp(volume, 0, 100) : 90,
     };
   }
@@ -560,6 +551,10 @@ export default function activate(folium) {
    *
    * 用 `folium.internals.stores`（宿主自己也在用同一份数据），全程 try/catch：
    * 哪天这个入口没了，最坏就是回到「没有时长、没有封面」，功能不受影响。
+   *
+   * 注意：`internals` 只在 manifest 声明 `folium: 1` 时可用（当前就是 1）。Folium 2
+   * 会去掉 internals，迁移到 `folium: 2` 时这段要改用公开接口（或退化成没有时长 /
+   * 封面），审查时也提示过这一点。
    */
   function hostPlaybackStore() {
     try {
@@ -2115,8 +2110,6 @@ export default function activate(folium) {
     state.queueIndex = null;
     setQueueOpen(false);
     setSourceOpen(false);
-    // 抽屉标题栏要让开宿主右上角那簇窗口按钮：进来时量一次
-    syncWindowChrome();
 
     kickoff();
     if (settings().pauseMusic) pauseHost();
@@ -2230,45 +2223,15 @@ export default function activate(folium) {
     else state.pausedHost = false;
   }
 
-  /* ---- 头顶让位：宿主窗口按钮那一簇有多高 ---- */
-
-  /**
-   * 宿主把窗口按钮（上一首 / 播放 / 下一首 / 远程控制 / 全屏）浮在窗口右上角，
-   * 顶栏本身是一条整宽的 h-8 遮罩。播放列表与换源的标题栏原来从窗口顶边开始画，
-   * 正好压在这簇按钮底下：叉号点不到，「播放列表」也看不清。
+  /* ---- 头顶让位 ----
    *
-   * 这里量一次这一簇的底边（找不到就用顶栏那 32px），只把标题栏的内容往下让，
-   * 抽屉的黑色背景仍然通顶 —— 视觉上还是整块，只是不再和窗口按钮打架。
+   * 宿主把窗口按钮浮在窗口右上角，播放列表 / 换源的标题栏原来从顶边开始画，正好
+   * 压在按钮底下。现在改用一个**固定值** `--mv-chrome-top: 40px`（见 CSS，宿主顶栏
+   * 32px + 8px 间距）把标题栏内容往下让，抽屉黑底仍然通顶。
+   *
+   * 以前是扫宿主所有 button 量出这一簇的底边 —— 那依赖宿主的 DOM 结构和类名，
+   * 不属于 Folium 接口，正式发布不能用，所以整段测量删掉了。
    */
-  function measureWindowChrome() {
-    let bottom = 32; // 宿主顶栏是 h-8
-    try {
-      const width = window.innerWidth;
-      for (const node of document.querySelectorAll('button')) {
-        if (root.contains(node)) continue; // 只找宿主的，别把自己的按钮算进去
-        const rect = node.getBoundingClientRect();
-        if (!rect.width || !rect.height) continue;
-        if (rect.top > 12) continue; // 贴着顶边
-        if (rect.right < width - 320) continue; // 靠右边那一簇
-        bottom = Math.max(bottom, rect.bottom);
-      }
-    } catch {
-      /* 量不到就按顶栏高度来 */
-    }
-    return Math.round(bottom) + 8;
-  }
-
-  function syncWindowChrome() {
-    root.style.setProperty('--mv-chrome-top', `${measureWindowChrome()}px`);
-  }
-
-  /**
-   * 标准的 fullscreenchange：页面进入/退出 HTML 全屏时，窗口按钮那一簇的位置
-   * 会变，重新量一次让位高度。不碰宿主 preload 的私有通道。
-   */
-  function onFullscreenChange() {
-    syncWindowChrome();
-  }
 
   /* ---- 控件自动隐藏 ---- */
 
@@ -2298,10 +2261,6 @@ export default function activate(folium) {
 
   root.addEventListener('mousemove', () => poke());
   root.addEventListener('pointerdown', () => poke());
-  // 窗口大小一变（含应用自带的整窗全屏），窗口按钮那一簇的位置/高度就可能变：重量一次
-  window.addEventListener('resize', syncWindowChrome);
-  // HTML 全屏切换也是标准事件，同样重新让位；不订阅宿主 preload 的私有通道
-  document.addEventListener('fullscreenchange', onFullscreenChange);
 
   /* ---- 键盘 ---- */
 
@@ -2482,206 +2441,16 @@ export default function activate(folium) {
   btnExitErr.addEventListener('click', () => close());
 
   /* ---------------------------------------------------------------- *
-   * 宿主歌曲列表里的 MV 图标
+   * 行内 MV 图标已整条移除
    *
-   * 宿主没给模组留「行级按钮」的接口，所以这里只做一件很窄的事：认准两类歌曲行
-   * （搜索结果 .search-row / 播放器侧栏「播放列表」标签页里的虚拟队列行），在行内
-   * 已有的操作图标旁边插一个自己的；点的时候**不碰宿主播放**（不 playSong、不切歌），
-   * 直接拿行上的歌名 / 歌手去找 MV。
+   * 之前的做法是靠宿主歌曲列表行的类名与结构定位，往里插按钮、再从 DOM 文本里
+   * 读歌名歌手。这些是 Folia 界面的实现细节，不属于 Folium 接口；宿主一改版
+   * 按钮就会消失或插错位置，读出来的歌名也可能不对，所以正式发布不能依赖。
    *
-   * 代价是依赖宿主的类名：哪天宿主改版，最坏的结果是按钮不再出现，
-   * 不会把列表点坏，也不会挡住宿主自己的按钮。
+   * 现在入口只保留两处：进度条右侧的 MV 按钮、命令面板的「看这首歌的 MV」。
+   * 如果以后确实需要「行级按钮」，要向宿主申请公开接口（folium.ui / 行级槽位），
+   * 不在模组里猜宿主 DOM。
    * ---------------------------------------------------------------- */
-
-  const ROW_FLAG = 'data-mv-row';
-  const ROW_KEY = 'data-mv-song';
-  let rowObserver = null;
-  let rowTimer = 0;
-
-  function inlineOn() {
-    return settings().inlineButton;
-  }
-
-  function rowTextOf(row, selector) {
-    const node = row.querySelector(selector);
-    return node ? String(node.textContent || '').trim() : '';
-  }
-
-  /** 搜索结果行：封面按钮后面那一格是文本区，行尾还有 mm:ss。 */
-  function songFromSearchRow(row) {
-    // 封面按钮后面那一格就是文本区；宿主改版找不到就往下退一层
-    const body = row.querySelector('.search-row-cover + div') || row.querySelector('.min-w-0.flex-1');
-    if (!body) return null;
-    const title = String((body.querySelector('button span') || body.querySelector('button') || {}).textContent || '').trim();
-    if (!title) return null;
-    const meta = body.children[1] || null;
-    const artist = meta ? String((meta.querySelector('button') || {}).textContent || '').trim() : '';
-    const clock = /^(\d{1,2}):(\d{2})$/.exec(rowTextOf(row, '.font-mono'));
-    return {
-      title,
-      artists: artist ? [{ name: artist }] : [],
-      duration: clock ? Number(clock[1]) * 60 + Number(clock[2]) : 0,
-    };
-  }
-
-  /** 播放器侧栏「播放列表」：react-window 的队列行，行上带着队列下标。 */
-  function songFromPanelRow(row) {
-    const body = row.querySelector('.min-w-0.flex-1');
-    if (!body || body.children.length < 2) return null;
-    const title = String(
-      (body.children[0].querySelector('span.truncate') || body.children[0]).textContent || '',
-    ).trim();
-    if (!title) return null;
-    const artist = String(body.children[1].textContent || '').trim();
-
-    // 行上有 data-react-window-index：能取回宿主队列里的完整 song（时长 / 多歌手都在），
-    // 比行上那两行文本更准；取不到就退回纯文本。
-    const idx = Number(row.getAttribute('data-react-window-index'));
-    const rich = Number.isFinite(idx) ? richQueue() : null;
-    const richSong = rich && rich[idx];
-    if (richSong && String(richSong.name || richSong.title || '').trim() === title) return richSong;
-    const snap = queueSnapshot();
-    const item = Number.isFinite(idx) && snap
-      ? snap.items.find((it) => it && Number(it.index) === idx)
-      : null;
-    if (item && item.song && songTitleOf(item.song) === title) return item.song;
-    return {
-      title,
-      artists: artist ? [{ name: artist.split(/\s*\/\s*/)[0] }] : [],
-      duration: 0,
-    };
-  }
-
-  /** 两处列表各自的「认行 / 读歌 / 插哪 / 多大」；加新列表只要加一项。 */
-  const ROW_KINDS = [
-    {
-      selector: '.search-row',
-      parse: songFromSearchRow,
-      size: 34,
-      round: true,
-      insert(row, btn) {
-        // 插在宿主自己的操作图标前面，跟它们排成一组
-        const action = row.querySelector('.search-row-action');
-        if (action && action.parentElement === row) row.insertBefore(btn, action);
-        else row.appendChild(btn);
-      },
-    },
-    {
-      // 侧栏面板里虚拟列表的队列行：这两枚属性是宿主自己写的，比长串 class 稳
-      selector: '.dock-companion--panel-surface [data-active][data-react-window-index]',
-      parse: songFromPanelRow,
-      size: 28,
-      round: false,
-      insert(row, btn) {
-        // 宿主那三颗图标是 hover 才展开的容器，塞进去平时就看不见了；
-        // 挂在行尾当常驻的一格，hover 时正好排在它们后面。
-        row.appendChild(btn);
-      },
-    },
-  ];
-
-  function makeRowButton(song, kind) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'mv-row-btn';
-    btn.title = `看《${songTitleOf(song)}》的 MV`;
-    btn.setAttribute('aria-label', btn.title);
-    btn.innerHTML = ICON_MV_ROW;
-    const icon = btn.querySelector('svg');
-    if (icon) {
-      const n = kind.round ? 16 : 15;
-      icon.setAttribute('width', String(n));
-      icon.setAttribute('height', String(n));
-    }
-    // 搜索行是 34×34 的圆形图标，播放器侧栏是 28×28 的圆角小方钮：各照各的来
-    btn.style.cssText =
-      `display:flex;align-items:center;justify-content:center;width:${kind.size}px;` +
-      `height:${kind.size}px;flex:none;padding:0;border:0;` +
-      `border-radius:${kind.round ? '999px' : '8px'};background:transparent;color:inherit;` +
-      'opacity:.42;cursor:pointer;transition:opacity .15s,background .15s';
-    btn.addEventListener('mouseenter', () => {
-      btn.style.opacity = '1';
-      btn.style.background = 'rgba(127,127,127,.16)';
-    });
-    btn.addEventListener('mouseleave', () => {
-      btn.style.opacity = '.42';
-      btn.style.background = 'transparent';
-    });
-    btn.addEventListener('click', (event) => {
-      // 行本身是「播放这首」：点图标不能顺手把歌切了
-      event.preventDefault();
-      event.stopPropagation();
-      open(song);
-    });
-    return btn;
-  }
-
-  function decorateRow(row, kind) {
-    let song = null;
-    try {
-      song = kind.parse(row);
-    } catch {
-      return;
-    }
-    if (!song) return;
-    // 虚拟列表会复用同一个 DOM 节点装下一首歌：标记里记下歌的 key，换了就重挂
-    const key = songKey(song);
-    if (row.getAttribute(ROW_FLAG) === '1' && row.getAttribute(ROW_KEY) === key) return;
-    const stale = row.querySelector('.mv-row-btn');
-    if (stale) stale.remove();
-    row.setAttribute(ROW_FLAG, '1');
-    row.setAttribute(ROW_KEY, key);
-    kind.insert(row, makeRowButton(song, kind));
-  }
-
-  function scanRows() {
-    rowTimer = 0;
-    if (!inlineOn()) return;
-    try {
-      for (const kind of ROW_KINDS) {
-        for (const row of document.querySelectorAll(kind.selector)) decorateRow(row, kind);
-      }
-    } catch {
-      /* 宿主结构变了就安静退出，别在别人的列表里抛错 */
-    }
-  }
-
-  function scheduleRows() {
-    if (rowTimer) return;
-    rowTimer = window.setTimeout(scanRows, 150);
-  }
-
-  /** 设置开关一变：要么把图标补上，要么把挂上去的都收回来。 */
-  function syncInlineRows() {
-    if (!inlineOn()) {
-      if (rowObserver) {
-        rowObserver.disconnect();
-        rowObserver = null;
-      }
-      for (const row of document.querySelectorAll(`[${ROW_FLAG}]`)) {
-        row.removeAttribute(ROW_FLAG);
-        row.removeAttribute(ROW_KEY);
-      }
-      for (const btn of document.querySelectorAll('.mv-row-btn')) btn.remove();
-      return;
-    }
-    if (!rowObserver && typeof MutationObserver === 'function') {
-      // 两处列表都是会翻页 / 虚拟滚动的：订阅整棵树的子节点变化，攒 150ms 扫一次就够
-      rowObserver = new MutationObserver(scheduleRows);
-      rowObserver.observe(document.body, { childList: true, subtree: true });
-    }
-    scheduleRows();
-  }
-
-  try {
-    const holder = section && (section.params || section.settings);
-    if (holder && typeof holder.subscribe === 'function') {
-      holder.subscribe(() => syncInlineRows());
-    }
-  } catch {
-    /* 老宿主没有订阅：下次列表变化时会按新设置重扫 */
-  }
-  syncInlineRows();
 
   log.info(
     `MV 影院：客户端就绪（Folia ${hostApp || '未知'} / 模组 API 1.${hostMinor}）`,
@@ -3090,15 +2859,6 @@ export default function activate(folium) {
       /* ignore */
     }
     if (loginUi) loginUi.dispose();
-    if (rowObserver) rowObserver.disconnect();
-    if (rowTimer) clearTimeout(rowTimer);
-    window.removeEventListener('resize', syncWindowChrome);
-    document.removeEventListener('fullscreenchange', onFullscreenChange);
-    for (const btn of document.querySelectorAll('.mv-row-btn')) btn.remove();
-    for (const row of document.querySelectorAll(`[${ROW_FLAG}]`)) {
-      row.removeAttribute(ROW_FLAG);
-      row.removeAttribute(ROW_KEY);
-    }
     if (pinnedSaveTimer) clearTimeout(pinnedSaveTimer);
     stopSync();
     resolvedCache.clear();

@@ -329,7 +329,7 @@ function installGlobals(window) {
   const section = calls.registered.settings[0];
   assert.ok(section, '必须注册设置分区');
   const keys = section.settings.map((item) => item.key);
-  assert.deepEqual(keys, ['pauseMusic', 'autoNext', 'inlineButton', 'quality', 'volume', 'cookie']);
+  assert.deepEqual(keys, ['pauseMusic', 'autoNext', 'quality', 'volume', 'cookie']);
   const cookieItem = section.settings.find((item) => item.key === 'cookie');
   assert.equal(cookieItem.type, 'secret');
 
@@ -613,7 +613,7 @@ function installGlobals(window) {
   const keys = calls.registered.settings[0].settings.map((item) => item.key);
   assert.deepEqual(
     keys,
-    ['pauseMusic', 'autoNext', 'inlineButton', 'quality', 'volume'],
+    ['pauseMusic', 'autoNext', 'quality', 'volume'],
     '1.6 上不出现 secret 字段',
   );
   assert.ok(calls.registered.commands.length >= 2);
@@ -727,7 +727,10 @@ function installGlobals(window) {
 }
 
 /* ------------------------------------------------------------------ *
- * 场景 5：宿主搜索列表里的 MV 图标
+ * 场景 5：宿主搜索结果行 —— 不插按钮、不读 DOM
+ *
+ * 审查意见：靠宿主类名定位行、从 DOM 文本读歌名歌手属于宿主实现细节，
+ * 正式发布不能依赖。这里断言模组对宿主列表「零操作」。
  * ------------------------------------------------------------------ */
 
 {
@@ -737,12 +740,11 @@ function installGlobals(window) {
   const { default: activate } = await import(pathToFileURL(clientPath).href);
   const dispose = activate(folium);
 
-  // 全屏层要像宿主那样挂一次，MV 页才会进 DOM
   const stage = window.document.createElement('div');
   window.document.body.appendChild(stage);
   for (const layer of calls.registered.layers) layer.mount(stage);
 
-  // 复刻宿主搜索结果的一行（结构来自真机 dump：.search-row > 封面 / 文本 / 时长 / 操作）
+  // 复刻真机里的搜索结果行（模组现在不该认它）
   const row = window.document.createElement('div');
   row.className = 'search-row';
   row.innerHTML = `
@@ -759,39 +761,33 @@ function installGlobals(window) {
 
   await flush(4);
 
-  const inline = row.querySelector('.mv-row-btn');
-  assert.ok(inline, '搜索结果的每一行要长出一个 MV 图标');
-  assert.match(inline.title, /晴天/, '图标要说明是哪首歌的 MV');
-  assert.equal(row.getAttribute('data-mv-row'), '1', '同一行别重复插');
-  assert.equal(
-    row.querySelectorAll('.mv-row-btn').length,
-    1,
-    '重扫一次也只留一个图标（宿主列表会频繁重渲染）',
-  );
+  assert.equal(row.querySelectorAll('.mv-row-btn').length, 0, '不能往宿主行里插按钮');
+  assert.equal(row.getAttribute('data-mv-row'), null, '也不能在宿主行上留标记');
+  assert.equal(window.document.querySelectorAll('[data-mv-row]').length, 0);
 
-  // 点图标：直接进影院找这首的 MV，且**不动宿主**
-  inline.click();
+  // 入口还在：进度条按钮用宿主「正在播放」的这首去找 MV，而不是读行上的文本
+  const bar = window.document.getElementById('bar');
+  calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+  bar.querySelector('button').click();
   await flush(4);
+
   const resolveCalls = calls.rpc.filter((call) => call.name === 'resolveMv');
-  assert.equal(resolveCalls.length, 1, '点图标要就地去找 MV');
-  assert.equal(resolveCalls[0].payload.title, '晴天', '歌名从这一行读');
-  assert.equal(resolveCalls[0].payload.artist, '周杰伦', '歌手也从这一行读');
-  assert.equal(resolveCalls[0].payload.durationMs, 269000, '时长同样跟着这一行');
-  assert.equal(calls.queue, 0, '点图标不能切歌（否则会跳到宿主播放页）');
-  assert.equal(calls.pause, 1, '看 MV 时按设置把音乐压住');
-  const root = window.document.querySelector('.mv-root');
-  assert.equal(root.getAttribute('data-shown'), '1', 'MV 页要在屏幕上');
+  assert.equal(resolveCalls.length, 1, '进度条按钮仍要能进影院');
+  assert.equal(resolveCalls[0].payload.title, '晴天', '歌名来自宿主播放状态');
+  assert.equal(resolveCalls[0].payload.artist, '周杰伦');
 
-  // 关掉开关：图标收回去
-  window.document.body.appendChild(window.document.createElement('div'));
+  // 改这一行的文本：模组不监听宿主 DOM，不该有任何反应
+  row.querySelector('button span').textContent = '完全不同的歌';
+  window.document.body.appendChild(window.document.createElement('span'));
+  await flush(4);
+  assert.equal(window.document.querySelectorAll('.mv-row-btn').length, 0, '改宿主 DOM 也不会冒出按钮');
+
   if (typeof dispose === 'function') dispose();
-  assert.equal(window.document.querySelectorAll('.mv-row-btn').length, 0, '退出时把自己的图标摘干净');
-
-  console.log('✓ 搜索列表：行内 MV 图标 → 就地看这支 MV，不动宿主播放');
+  console.log('✓ 宿主搜索列表：不插按钮、不读 DOM 文本，入口仍在进度条');
 }
 
 /* ------------------------------------------------------------------ *
- * 场景 6：播放器侧栏「播放列表」里的 MV 图标
+ * 场景 6：宿主播放器侧栏的队列行 —— 同样零操作
  * ------------------------------------------------------------------ */
 
 {
@@ -805,7 +801,7 @@ function installGlobals(window) {
   window.document.body.appendChild(stage);
   for (const layer of calls.registered.layers) layer.mount(stage);
 
-  // 复刻真机 dump：侧栏面板 → 虚拟列表的队列行（带 data-active / 队列下标）
+  // 复刻侧栏面板里的虚拟队列行（带宿主自己的队列下标）
   const panel = window.document.createElement('div');
   panel.className = 'dock-companion dock-companion--panel-surface';
   const scroller = window.document.createElement('div');
@@ -816,52 +812,30 @@ function installGlobals(window) {
   const row = window.document.createElement('div');
   row.setAttribute('data-active', 'false');
   row.setAttribute('data-react-window-index', '1');
-  row.setAttribute('aria-posinset', '2');
   row.setAttribute('role', 'listitem');
-  row.className =
-    'st-t-fast group flex cursor-pointer items-center rounded-lg pl-3 pr-1.5 transition-colors';
+  row.className = 'group flex cursor-pointer items-center rounded-lg';
   row.innerHTML = `
     <div class="min-w-0 flex-1">
-      <div class="flex items-center gap-2 text-[13px] leading-[19px]"><span class="truncate">七里香</span></div>
-      <div class="truncate text-xs leading-[17px]">周杰伦</div>
+      <div class="flex items-center gap-2"><span class="truncate">七里香</span></div>
+      <div class="truncate text-xs">周杰伦</div>
     </div>
-    <div class="st-t-fast flex w-0 shrink-0 items-center gap-0.5 overflow-hidden opacity-0">
-      <span><button></button></span>
-    </div>`;
+    <div class="flex w-0 shrink-0 items-center overflow-hidden opacity-0"><span><button></button></span></div>`;
   scroller.appendChild(row);
 
   await flush(4);
 
-  const inline = row.querySelector('.mv-row-btn');
-  assert.ok(inline, '播放器队列的每一行也要长出 MV 图标');
-  assert.match(inline.title, /七里香/, '图标要说明是哪首歌的 MV');
-  assert.equal(inline.style.width, '28px', '侧栏行用 28×28 的小方钮，跟宿主那排图标一致');
-  assert.equal(inline.style.borderRadius, '8px', '侧栏行用圆角方钮，不是搜索行的圆形大钮');
-  assert.ok(row.getAttribute('data-mv-song'), '记下这一行装的是哪首歌');
-  assert.equal(row.querySelectorAll('.mv-row-btn').length, 1, '重扫也只留一个图标');
+  assert.equal(row.querySelectorAll('.mv-row-btn').length, 0, '侧栏队列行也不能插按钮');
+  assert.equal(row.getAttribute('data-mv-song'), null, '不能在宿主行上记歌');
 
-  // 虚拟列表会复用同一个 DOM 节点：换成下一首，图标得跟着换
+  // 虚拟列表复用节点换歌：模组不订阅 DOM，不该有任何变化
   row.setAttribute('data-react-window-index', '2');
   row.querySelector('span.truncate').textContent = '稻香';
-  row.appendChild(window.document.createElement('span')); // 触发一次子树变化
+  row.appendChild(window.document.createElement('span'));
   await flush(4);
-  assert.match(row.querySelector('.mv-row-btn').title, /稻香/, '复用行时要换成新歌');
-  assert.equal(row.querySelectorAll('.mv-row-btn').length, 1, '换歌后仍只有一个图标');
-
-  // 点图标：拿宿主队列里的完整 song（含时长）去找 MV，不切歌
-  row.querySelector('.mv-row-btn').click();
-  await flush(4);
-  const resolveCalls = calls.rpc.filter((call) => call.name === 'resolveMv');
-  assert.equal(resolveCalls.length, 1, '点图标要就地去找 MV');
-  assert.equal(resolveCalls[0].payload.title, '稻香', '歌名用宿主队列里的');
-  assert.equal(resolveCalls[0].payload.artist, '周杰伦', '歌手也用宿主队列里的');
-  assert.equal(resolveCalls[0].payload.durationMs, 270000, '时长从宿主队列补齐（行上没有 mm:ss）');
-  assert.equal(calls.queue, 0, '点图标不能切歌');
+  assert.equal(row.querySelectorAll('.mv-row-btn').length, 0, '换歌也不会冒出按钮');
 
   if (typeof dispose === 'function') dispose();
-  assert.equal(window.document.querySelectorAll('.mv-row-btn').length, 0, '退出时把自己的图标摘干净');
-
-  console.log('✓ 播放器队列：行内 MV 图标 → 就地看这支 MV，不动宿主播放');
+  console.log('✓ 宿主播放器队列：不插按钮、不订阅 DOM 变化');
 }
 
 /* ------------------------------------------------------------------ *
@@ -939,11 +913,16 @@ function installGlobals(window) {
   );
 
   const root = window.document.querySelector('.mv-root');
-  // jsdom 量不到按钮位置 → 至少要让开宿主顶栏那 32px（+8px 间距）
+  // 顶栏让位改成固定值：CSS 里就是 40px 兜底，不再运行时扫宿主 DOM 写变量
+  assert.match(
+    root.querySelector('style').textContent,
+    /--mv-chrome-top,\s*40px/,
+    '抽屉标题栏用固定 40px 让开宿主右上角的窗口按钮',
+  );
   assert.equal(
     root.style.getPropertyValue('--mv-chrome-top'),
-    '40px',
-    '抽屉标题栏要让开宿主右上角的窗口按钮',
+    '',
+    '不再运行时量宿主按钮写 CSS 变量',
   );
 
   // 队列列表里也应该看得见时长与封面（都是从内部那份补的）：看第二行的那首待播
@@ -966,13 +945,21 @@ function installGlobals(window) {
 }
 
 /* ------------------------------------------------------------------ *
- * 场景 8：从搜索列表点进来的 MV 不在宿主队列里
+ * 场景 8：正在播放的歌不在宿主队列里（从搜索结果直接播的那首）
  * 列表要把它置顶成当前项，而不是拿宿主队列的下标去高亮另一首歌；
  * 计数只报列表实际条数，不写「48/439」那种宿主队列位置。
  * ------------------------------------------------------------------ */
 
 {
-  const { window, folium, calls } = makeHost();
+  // 宿主正在播放的是一首「不在队列里」的歌
+  const outside = {
+    title: '快点告诉你',
+    artists: [{ name: '李梦璐' }],
+    duration: 201,
+    coverUrl: '',
+    sourceRef: { kind: 'online', providerId: 'netease', mediaId: '99' },
+  };
+  const { window, folium, calls } = makeHost({ song: outside });
   installGlobals(window);
 
   const { default: activate } = await import(pathToFileURL(clientPath).href);
@@ -982,22 +969,10 @@ function installGlobals(window) {
   window.document.body.appendChild(stage);
   for (const layer of calls.registered.layers) layer.mount(stage);
 
-  // 宿主队列里是周杰伦三首；搜索到的是完全另一首
-  const row = window.document.createElement('div');
-  row.className = 'search-row';
-  row.innerHTML = `
-    <span class="search-row-index">01</span>
-    <button class="search-row-cover"><img><span class="search-row-play"></span></button>
-    <div class="min-w-0 flex-1">
-      <div class="flex items-center gap-2"><button><span>快点告诉你</span></button></div>
-      <div class="mt-1 flex"><span><button>李梦璐</button></span><button>儿歌</button></div>
-    </div>
-    <span class="font-mono text-xs">3:21</span>
-    <button class="search-row-action"></button>`;
-  window.document.body.appendChild(row);
-
-  await flush(4);
-  row.querySelector('.mv-row-btn').click();
+  // 入口只剩进度条按钮：它拿宿主当前这首歌进影院
+  const bar = window.document.getElementById('bar');
+  calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+  bar.querySelector('button').click();
   await flush(4);
 
   const root = window.document.querySelector('.mv-root');
@@ -1033,11 +1008,14 @@ function installGlobals(window) {
 }
 
 /* ------------------------------------------------------------------ *
- * 场景 9：静态合规扫描 —— 审核明确列为「不收」的私有接口，源码里一个都不能有
+ * 场景 9：静态合规扫描
+ *   1) 审核明确列为「不收」的宿主私有接口，源码里一个都不能有；
+ *   2) 也不能靠宿主界面的类名 / DOM 结构定位元素（行内 MV 图标已整条移除）。
  * ------------------------------------------------------------------ */
 {
   const source = fs.readFileSync(clientPath, 'utf8');
-  const forbidden = [
+
+  const forbiddenChannels = [
     'window.electron',
     'toggleFullscreenWindow',
     'isWindowFullscreen',
@@ -1045,17 +1023,37 @@ function installGlobals(window) {
     'localStorage',
     'requestFullscreen',
   ];
-  for (const token of forbidden) {
+  for (const token of forbiddenChannels) {
     assert.ok(
       !source.includes(token),
       `client.mjs 不该再出现「${token}」：宿主 preload 私有通道与整窗全屏已整条移除`,
     );
   }
-  assert.ok(source.includes("folium.storage.get(VOL_KEY)"), '音量要从 folium.storage 读');
+
+  // 宿主界面的实现细节：类名、虚拟列表属性、自己插进去的按钮
+  const forbiddenDom = [
+    '.search-row',
+    'search-row-cover',
+    'search-row-action',
+    'dock-companion',
+    'data-react-window-index',
+    'min-w-0',
+    'span.truncate',
+    'mv-row-btn',
+    'data-mv-row',
+  ];
+  for (const token of forbiddenDom) {
+    assert.ok(
+      !source.includes(token),
+      `client.mjs 不该再出现「${token}」：行内 MV 图标已移除，不再依赖宿主 DOM`,
+    );
+  }
+  assert.ok(!source.includes("querySelectorAll('button')"), '不再扫宿主按钮去量顶栏高度');
+  assert.ok(source.includes('--mv-chrome-top,40px'), '顶栏让位改成固定 40px');
+
+  assert.ok(source.includes('folium.storage.get(VOL_KEY)'), '音量要从 folium.storage 读');
   assert.ok(source.includes('folium.storage.set(VOL_KEY'), '音量要写回 folium.storage');
-  assert.ok(source.includes("addEventListener('fullscreenchange'"), '要用标准的 fullscreenchange 事件跟随窗口');
-  assert.ok(source.includes("addEventListener('resize', syncWindowChrome"), '让位逻辑仍要在 resize 时重算');
-  console.log('✓ 静态扫描：client.mjs 不含宿主 preload 私有接口 / localStorage / DOM 全屏调用');
+  console.log('✓ 静态扫描：无宿主私有接口、无宿主 DOM 依赖、音量走 folium.storage');
 }
 
 /* ------------------------------------------------------------------ *

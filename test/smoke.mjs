@@ -79,6 +79,7 @@ function makeHost({
   internals = null,
   queueItems = QUEUE,
   stored = {},
+  settings = {},
 } = {}) {
   const dom = new JSDOM('<!doctype html><html><body><div id="bar"></div></body></html>', {
     pretendToBeVisual: true,
@@ -164,7 +165,9 @@ function makeHost({
     quality: 'auto',
     pauseMusic: true,
     autoNext: true,
+    resetLyricsOnNext: true,
     volume: 90,
+    ...settings,
   };
 
   const folium = {
@@ -334,11 +337,11 @@ function installGlobals(window) {
   const { default: activate } = await import(pathToFileURL(clientPath).href);
   const dispose = activate(folium);
 
-  // 1. 设置项：暂停 / 连播 / 画质 / 音量 / cookie（secret 只在 1.7+ 出现）
+  // 1. 设置项：暂停 / 连播 / 换片关歌词 / 画质 / 音量 / cookie（secret 只在 1.7+ 出现）
   const section = calls.registered.settings[0];
   assert.ok(section, '必须注册设置分区');
   const keys = section.settings.map((item) => item.key);
-  assert.deepEqual(keys, ['pauseMusic', 'autoNext', 'quality', 'volume', 'cookie']);
+  assert.deepEqual(keys, ['pauseMusic', 'autoNext', 'resetLyricsOnNext', 'quality', 'volume', 'cookie']);
   const cookieItem = section.settings.find((item) => item.key === 'cookie');
   assert.equal(cookieItem.type, 'secret');
 
@@ -644,7 +647,7 @@ function installGlobals(window) {
   const keys = calls.registered.settings[0].settings.map((item) => item.key);
   assert.deepEqual(
     keys,
-    ['pauseMusic', 'autoNext', 'quality', 'volume'],
+    ['pauseMusic', 'autoNext', 'resetLyricsOnNext', 'quality', 'volume'],
     '1.6 上不出现 secret 字段',
   );
   assert.ok(calls.registered.commands.length >= 2);
@@ -1365,6 +1368,165 @@ function installGlobals(window) {
 
   if (typeof dispose === 'function') dispose();
   console.log('✓ 歌词：宿主歌词属于另一首时不显示，避免张冠李戴');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 15：换下一支 MV 时，歌词开关按设置重置
+ * 默认（resetLyricsOnNext 开）：上一支开着，下一支也回到关闭；
+ * 关掉这个设置：开关一直保持，下一支持续显示。
+ * ------------------------------------------------------------------ */
+
+{
+  const lyrics = {
+    lines: [
+      { startTime: 0, endTime: 30, fullText: '第一句', translation: '' },
+      { startTime: 30, endTime: 60, fullText: '第二句', translation: '' },
+    ],
+  };
+  const nextSong = { ...SONG, title: '七里香' };
+
+  for (const reset of [true, false]) {
+    let hostSong = SONG; // 宿主的「当前这首」跟着换，歌词才对得上
+    const internals = {
+      stores: {
+        playback: {
+          getState: () => ({
+            currentSong: hostSong,
+            playQueue: QUEUE.map((it) => it.song),
+            lyrics,
+          }),
+        },
+      },
+    };
+
+    const { window, folium, calls, listeners } = makeHost({
+      internals,
+      settings: { resetLyricsOnNext: reset },
+    });
+    installGlobals(window);
+
+    const { default: activate } = await import(pathToFileURL(clientPath).href);
+    const dispose = activate(folium);
+
+    const stage = window.document.createElement('div');
+    window.document.body.appendChild(stage);
+    for (const layer of calls.registered.layers) layer.mount(stage);
+
+    const bar = window.document.getElementById('bar');
+    calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+    bar.querySelector('button').click();
+    await flush(6);
+
+    const root = window.document.querySelector('.mv-root');
+    const video = root.querySelector('video');
+    video.__duration = 270; // 跟歌一样长，歌词可用
+    video.dispatchEvent(new window.Event('loadedmetadata'));
+    await flush(3);
+
+    const btnOn = () =>
+      [...root.querySelectorAll('.mv-btn')].find((el) => String(el.title).startsWith('显示歌词'));
+
+    btnOn().click();
+    await flush(2);
+    assert.equal(root.getAttribute('data-lyrics'), '1', `（reset=${reset}）先手动把歌词打开`);
+
+    // 换下一支 MV
+    hostSong = nextSong;
+    for (const handler of listeners.get('playback.songChanged') || []) handler({ song: nextSong });
+    await flush(4);
+    assert.equal(root.getAttribute('data-lyrics'), '0', '换歌瞬间要把上一首的词收掉');
+
+    const video2 = root.querySelector('video');
+    video2.__duration = 270;
+    video2.dispatchEvent(new window.Event('loadedmetadata'));
+    await flush(4);
+
+    const btn = btnOn();
+    assert.notEqual(btn.style.display, 'none', '长度对得上，歌词按钮要在');
+    if (reset) {
+      assert.equal(btn.getAttribute('data-active'), '0', '默认：换下一支时开关要回到关闭');
+      assert.equal(root.getAttribute('data-lyrics'), '0', '默认：换下一支不自动显示歌词');
+      btn.click();
+      await flush(2);
+      assert.equal(root.getAttribute('data-lyrics'), '1', '下一支想看得再点一下');
+    } else {
+      assert.equal(btn.getAttribute('data-active'), '1', '关掉设置后，开关要一直保持打开');
+      assert.equal(root.getAttribute('data-lyrics'), '1', '歌词跟着直接显示');
+    }
+
+    if (typeof dispose === 'function') dispose();
+  }
+
+  console.log('✓ 歌词：换下一支 MV 默认关掉开关，设置里可以改成一直保持');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 15b：从播放列表点下一支（连播也走这条路）同样按设置重置
+ * ------------------------------------------------------------------ */
+
+{
+  const lyrics = {
+    lines: [{ startTime: 0, endTime: 60, fullText: '第一句', translation: '' }],
+  };
+  const nextSong = { ...SONG, title: '七里香' };
+  let hostSong = SONG;
+  const internals = {
+    stores: {
+      playback: {
+        getState: () => ({
+          currentSong: hostSong,
+          playQueue: QUEUE.map((it) => it.song),
+          lyrics,
+        }),
+      },
+    },
+  };
+
+  const { window, folium, calls } = makeHost({ internals });
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  const stage = window.document.createElement('div');
+  window.document.body.appendChild(stage);
+  for (const layer of calls.registered.layers) layer.mount(stage);
+
+  const bar = window.document.getElementById('bar');
+  calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+  bar.querySelector('button').click();
+  await flush(6);
+
+  const root = window.document.querySelector('.mv-root');
+  root.querySelector('video').__duration = 270;
+  root.querySelector('video').dispatchEvent(new window.Event('loadedmetadata'));
+  await flush(3);
+
+  const btnOn = () =>
+    [...root.querySelectorAll('.mv-btn')].find((el) => String(el.title).startsWith('显示歌词'));
+  btnOn().click();
+  await flush(2);
+  assert.equal(root.getAttribute('data-lyrics'), '1', '先打开歌词');
+
+  // 从播放列表里点「七里香」：这条路以前没清歌词，现在也要按设置归零
+  root.querySelector('.mv-btn[title^="播放列表"]').click();
+  await flush(3);
+  const rows = [...root.querySelectorAll('.mv-qrow')];
+  hostSong = nextSong;
+  rows[1].click();
+  await flush(4);
+
+  root.querySelector('video').__duration = 270;
+  root.querySelector('video').dispatchEvent(new window.Event('loadedmetadata'));
+  await flush(4);
+
+  const btn = btnOn();
+  assert.notEqual(btn.style.display, 'none', '长度对得上，按钮要在');
+  assert.equal(btn.getAttribute('data-active'), '0', '列表点下一支时，歌词开关也要回到关闭');
+  assert.equal(root.getAttribute('data-lyrics'), '0', '不自动显示');
+
+  if (typeof dispose === 'function') dispose();
+  console.log('✓ 歌词：从播放列表点下一支 MV，开关同样按设置重置');
 }
 
 console.log('\n全部通过。');

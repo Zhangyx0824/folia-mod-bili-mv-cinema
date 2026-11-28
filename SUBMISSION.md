@@ -1,14 +1,20 @@
 # 上架记录 · MV 影院 bili-mv-cinema
 
-## 当前状态（v1.8.1）
+## 当前状态（v1.9.0）
 
 | 项 | 状态 |
 |---|---|
-| 版本 | **v1.8.1**（歌词开关的时长容差从「等长 ±5s/2%」放宽到「相差 20 秒以内」） |
-| 代码 | `bili-mv-cinema/` · `node test/smoke.mjs` + `node test/unit.mjs` 全绿（15 个场景） |
+| 版本 | **v1.9.0**（换下一支 MV 时歌词开关按设置重置，新增设置项 `resetLyricsOnNext`） |
+| 代码 | `bili-mv-cinema/` · `node test/smoke.mjs` + `node test/unit.mjs` 全绿（17 个场景） |
 | 预览图 | `bili-mv-cinema/preview.jpg`（真 B 站 MV 帧 + 模组真实 DOM 截图，`node test/build_preview.mjs` 可复现） |
 | 仓库 | `git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git` |
-| 剩下的事 | v1.7.0 已签名收录（issue #192 已关闭）；本版需**新开一个「模组更新」issue**（不是改 #192），版本填 `v1.8.1` |
+| 剩下的事 | v1.7.0 已签名收录（issue #192 已关闭）；本版需**新开一个「模组更新」issue**（不是改 #192），版本填 `v1.9.0` |
+
+### v1.9.0 改了什么
+
+- **新增设置项 ·「换一支 MV 就把歌词关掉」（默认开）**：换片时（连播、在播放列表点下一支、宿主自己换歌、重新进影院）歌词开关回到关闭，上一支开着不代表下一支也想看。关掉这项则保持原来的行为：开关一直跟着走，下一支长度对得上就直接继续显示歌词。
+- 顺带补了一个旧漏：从播放列表点另一支 MV 走的是 `playQueueRow()`，这条路之前既没清歌词、也没挂 `watchLyrics()`（宿主歌词晚到时不重试），现在和 `open()` / `followSong()` 统一了。
+- 测试：新增两个场景 —— 换歌后默认关闭（并验证关掉设置后仍持续显示）、从播放列表点下一支同样重置；设置键断言、老宿主键断言同步加上 `resetLyricsOnNext`。
 
 ### v1.8.1 改了什么
 
@@ -106,13 +112,13 @@
 ```bash
 cd ~/folia-mod-bili-mv-cinema
 git add -A
-git commit -m "feat: v1.8.1 — 歌词开关的时长容差放宽到 20 秒以内"
-git tag v1.8.1
+git commit -m "feat: v1.9.0 — 换下一支 MV 时按设置重置歌词开关"
+git tag v1.9.0
 git push origin main
-git push origin v1.8.1
+git push origin v1.9.0
 ```
 
-然后到 folium-compound 的收录 issue（#192）把正文「版本 / Version (tag or commit)」字段改成 `v1.8.1`，机器人会重新检查，维护者再审一次。
+然后到 folium-compound **新开一个「模组更新」issue**（模板 `mod-update.yml`），模组 id `bili-mv-cinema`、版本填 `v1.9.0`、渠道与分类选「保持不变」、更新说明写这一版的改动。**不要再改 #192** —— 它已签名收录 1.7.0 并关闭。
 
 ## 四、后续可做
 

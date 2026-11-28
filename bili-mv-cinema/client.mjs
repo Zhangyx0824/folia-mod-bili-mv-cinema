@@ -373,6 +373,16 @@ export default function activate(folium) {
       ),
     },
     {
+      key: 'resetLyricsOnNext',
+      type: 'boolean',
+      defaultValue: true,
+      label: label('换一支 MV 就把歌词关掉', 'Turn lyrics off for each new MV'),
+      description: label(
+        '开着：每换一支 MV，歌词都回到关闭状态，想看再点一下 —— 上一支开着不代表下一支也想看。关掉：开关跟着一直保持，上一支开着下一支也开着（长度对不上时不显示）。',
+        'On: each new MV starts with lyrics off. Off: the switch stays on across MVs.',
+      ),
+    },
+    {
       key: 'quality',
       type: 'select',
       defaultValue: 'auto',
@@ -442,6 +452,7 @@ export default function activate(folium) {
       quality: qualityList.includes(raw.quality) ? raw.quality : 'auto',
       pauseMusic: raw.pauseMusic !== false,
       autoNext: raw.autoNext !== false,
+      resetLyricsOnNext: raw.resetLyricsOnNext !== false,
       volume: Number.isFinite(volume) ? clamp(volume, 0, 100) : 90,
     };
   }
@@ -475,7 +486,10 @@ export default function activate(folium) {
     queueIndex: null,
     /** 换源抽屉开着没（跟播放列表互斥） */
     sourceOpen: false,
-    /** 歌词开关：用户手动打开过就一直是用户的意思，换一支对不齐的 MV 只是不显示，不清这个值 */
+    /**
+     * 歌词开关。默认按设置「换一支 MV 就把歌词关掉」在换片时归零；
+     * 关掉那个设置就一直是用户的意思，换一支对不齐的 MV 只是不显示，不清这个值。
+     */
     lyricsOn: false,
     /** 当前这首歌归一化后的歌词（没有 / 长度对不上时是 null） */
     lyricsLines: null,
@@ -1319,8 +1333,13 @@ export default function activate(folium) {
     }
   }
 
-  /** 进影院 / 换歌时把上一首的歌词清掉，等这支 MV 的元数据到了再判断。 */
+  /**
+   * 进影院 / 换歌时把上一首的歌词清掉，等这支 MV 的元数据到了再判断。
+   * 设置里「换一支 MV 就把歌词关掉」开着时，连开关本身也归零 ——
+   * 上一支开着不代表下一支也想看。
+   */
   function resetLyrics() {
+    if (settings().resetLyricsOnNext) state.lyricsOn = false;
     state.lyricsLines = null;
     lyricIndex = -1;
     btnLyrics.style.display = 'none';
@@ -1935,8 +1954,11 @@ export default function activate(folium) {
     state.candidates = [];
     state.qualityOverride = '';
     clearMedia();
+    // 换成列表里的另一支 MV 也是「换一支」：歌词清掉、按设置决定要不要关开关
+    resetLyrics();
     applyVolume();
     renderQueue();
+    watchLyrics();
 
     if (bvid) void resolve({ bvid });
     else void resolve({});

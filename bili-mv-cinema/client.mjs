@@ -843,13 +843,13 @@ export default function activate(folium) {
   controls.appendChild(spacer);
 
   /**
-   * 歌词开关。默认不出现、也不打开：只有当「这一支 MV 跟这首歌一样长」、
+   * 歌词开关。默认不出现、也不打开：只有当「这一支 MV 跟这首歌长度相近（差 20s 内）」、
    * 且宿主确实有这份歌词时，refreshLyricsButton 才把它亮出来。
    */
   const btnLyrics = document.createElement('button');
   btnLyrics.type = 'button';
   btnLyrics.className = 'mv-btn tall';
-  btnLyrics.title = '显示歌词（MV 与歌曲等长时可用）';
+  btnLyrics.title = '显示歌词（MV 与歌曲时长相差 20 秒内可用）';
   btnLyrics.innerHTML = `${ICON_LYRICS}<span>歌词</span>`;
   btnLyrics.style.display = 'none';
   controls.appendChild(btnLyrics);
@@ -1173,7 +1173,7 @@ export default function activate(folium) {
     updateProgress();
     startSync();
     syncPlayIcon();
-    // 时长到了才能判断「这支 MV 跟歌是不是一样长」，歌词开关到这儿才见分晓
+    // 时长到了才能判断「这支 MV 跟歌长度差多少」，歌词开关到这儿才见分晓
     refreshLyrics();
   });
   video.addEventListener('play', () => {
@@ -1222,14 +1222,18 @@ export default function activate(folium) {
    * 歌词
    *
    * MV 播的是 B 站投稿自己的音轨，跟宿主的歌曲文件不是同一段录音，时间轴未必对得上。
-   * 所以只有「这一支视频跟这首歌一样长」时才认为它们是同一段，宿主那份歌词的时间轴
-   * 可以直接拿来用；长度对不上就不给开关，免得整篇歌词越走越偏。
+   * 所以只有「这一支视频跟这首歌长度差不多」时才认为它们是同一段，宿主那份歌词的时间轴
+   * 可以直接拿来用。B 站投稿常带几秒片头 / 片尾，卡死「完全等长」会把大部分英文 MV
+   * 挡在外面，所以放到 20s 以内；差得更多就不给开关，免得整篇歌词越走越偏。
    *
    * 歌词来源：0.8.0 的公开 song DTO 里没有歌词，跟时长 / 封面一样从
    * `folium.internals.stores.playback` 里读宿主的 lyrics（宿主自己也在用同一份数据）。
    * Folium 2 去掉 internals 之后这里会退化成「没有歌词」，开关自然不出现，其它功能
    * 不受影响 —— 和时长 / 封面的兜底是同一个取舍。
    * ---------------------------------------------------------------- */
+
+  /** 视频与歌曲时长差在这个范围内，才认为歌词时间轴可以借用 */
+  const LYRIC_LENGTH_TOLERANCE = 20;
 
   /** 宿主歌词里的纯标注行（作词 / 作曲 / 制作人…）不当作歌词显示 */
   const LYRIC_META_ZH = /^\s*(作词|作曲|编曲|制作人|出品|监制|混音|母带|录音|和声|吉他|贝斯|鼓|弦乐|词|曲)\s*[:：]/;
@@ -1270,12 +1274,12 @@ export default function activate(folium) {
     return lines;
   }
 
-  /** 视频跟歌一样长（±max(5s, 2%)）才算同一段录音，歌词时间轴才能直接用。 */
+  /** 视频跟歌相差 20s 以内就算同一段录音，歌词时间轴直接借来用。 */
   function lyricsAligned() {
     const songSec = songDurationSec(state.song);
     const videoSec = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
     if (!songSec || !videoSec) return false;
-    return Math.abs(videoSec - songSec) <= Math.max(5, songSec * 0.02);
+    return Math.abs(videoSec - songSec) <= LYRIC_LENGTH_TOLERANCE;
   }
 
   /** 开着的意图（state.lyricsOn）和当前这支 MV 能不能显示，合成一个属性给 CSS。 */
@@ -1286,7 +1290,7 @@ export default function activate(folium) {
   }
 
   /**
-   * 重新判断这首歌能不能显示歌词：宿主有歌词 + 这支 MV 跟歌一样长。
+   * 重新判断这首歌能不能显示歌词：宿主有歌词 + 这支 MV 跟歌长度差在 20s 内。
    * 缺一个就把按钮收起来（用户原来开着的偏好留着，换到对得齐的 MV 又会出现）。
    */
   function refreshLyrics() {

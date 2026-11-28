@@ -1,21 +1,27 @@
 # 上架记录 · MV 影院 bili-mv-cinema
 
-## 当前状态（v1.8.0）
+## 当前状态（v1.8.1）
 
 | 项 | 状态 |
 |---|---|
-| 版本 | **v1.8.0**（修「左下角播放/暂停按钮没反应」；新增按 MV 长度判断的歌词开关，默认关） |
-| 代码 | `bili-mv-cinema/` · `node test/smoke.mjs` + `node test/unit.mjs` 全绿（14 个场景） |
+| 版本 | **v1.8.1**（歌词开关的时长容差从「等长 ±5s/2%」放宽到「相差 20 秒以内」） |
+| 代码 | `bili-mv-cinema/` · `node test/smoke.mjs` + `node test/unit.mjs` 全绿（15 个场景） |
 | 预览图 | `bili-mv-cinema/preview.jpg`（真 B 站 MV 帧 + 模组真实 DOM 截图，`node test/build_preview.mjs` 可复现） |
 | 仓库 | `git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git` |
-| 剩下的事 | push `main` + tag `v1.8.0` → 把上架 issue 的「版本」改成 `v1.8.0`，机器人重新检查 |
+| 剩下的事 | push `main` + tag `v1.8.1` → 把上架 issue 的「版本」改成 `v1.8.1`，机器人重新检查 |
+
+### v1.8.1 改了什么
+
+- **歌词开关的判定放宽**：原来要求 MV 与歌曲「等长」（差 ≤ max(5s, 2%)），B 站投稿常带几秒片头 / 片尾，多数英文 MV 因此拿不到开关。现在改成**时长相差 20 秒以内**就认为用的是同一段录音（`LYRIC_LENGTH_TOLERANCE = 20`），修掉「明明有歌词却一直不出现按钮」的问题。
+- 代价说清楚：容差内的片头 / 片尾会让歌词整体提前或推后几秒，README 的「已知边界」里写明了这个取舍；差得更多仍然不给开关。
+- 测试：新增「差 18s 仍给开关」场景；原来那个 200s vs 270s（差 70s）的场景保留，断言现在明确为「超过 20s 容差才不给」。
 
 ### v1.8.0 改了什么
 
 - **修 bug · 左下角播放/暂停按钮按了没反应**：按钮在 `toggle()` 里会重建自己的图标（`syncPlayIcon()` 直接写 `innerHTML`），刚被点中的 `<svg><path>` 于是脱离文档；事件继续冒泡到根节点时 `event.target.closest('.mv-bottom')` 返回 `null`，"点在控件里" 的判断失效，画面监听又 `toggle()` 了一次 —— 播放后立刻暂停，净效果就是「按了没反应」。现在判定改看 `event.composedPath()`（派发时就算好的路径，不受后续 DOM 改动影响），播放键自己的 click 也 `stopPropagation()`；`syncPlayIcon` 加了状态缓存，不再每次事件都重建图标。真机 Chromium（CDP 真实鼠标事件）复现：修前一次点击 `play()` 跑 2 次，修后 1 次。
-- **新增 · 歌词开关（默认关）**：这一支 MV 跟这首歌**一样长**（±max(5s, 2%)）时，认为用的是同一段录音，控制条右侧多一个「歌词」按钮。点开把宿主的歌词铺在画面下方（当前句加粗 + 翻译 + 下一句浅色），跟着 **MV 自己的 `currentTime`** 滚（看 MV 时宿主音乐是停的，歌词时钟只能用自己的），再点关掉。长度对不上 / 宿主没有歌词 / 宿主当前是另一首歌时不出现这个开关。
+- **新增 · 歌词开关（默认关）**：这一支 MV 跟这首歌**时长相差 20 秒以内**时，认为用的是同一段录音，控制条右侧多一个「歌词」按钮。点开把宿主的歌词铺在画面下方（当前句加粗 + 翻译 + 下一句浅色），跟着 **MV 自己的 `currentTime`** 滚（看 MV 时宿主音乐是停的，歌词时钟只能用自己的），再点关掉。差得更多 / 宿主没有歌词 / 宿主当前是另一首歌时不出现这个开关。容差内的片头 / 片尾会让歌词整体提前或推后几秒，是已知取舍。
 - 歌词数据同样只读地取 `folium.internals.stores.playback`（`state.lyrics`，行为 `{startTime, endTime, fullText, translation}`），和时长 / 封面一处兜底；`internals` 在 Folium 2 去掉后这个开关会自动不出现，不影响其它功能。`作词：/ 作曲：/ Producer:` 这类纯标注行会被过滤。
-- 测试：主路径新增「一次点击只能切一次（数 play/pause 翻转次数）」回归断言；新增 4 个歌词场景（等长才给开关 + 跟着时间轴滚 + 翻译/下一句、不等长不给、没歌词不给、宿主歌词属于另一首不给）。
+- 测试：主路径新增「一次点击只能切一次（数 play/pause 翻转次数）」回归断言；新增 5 个歌词场景（等长给开关 + 差 18s 仍给 + 跟着时间轴滚 + 翻译/下一句、差 70s 不给、没歌词不给、宿主歌词属于另一首不给）。
 
 ### v1.7.0 改了什么（对应第二轮审核意见）
 
@@ -100,13 +106,13 @@
 ```bash
 cd ~/folia-mod-bili-mv-cinema
 git add -A
-git commit -m "feat: v1.8.0 — 修左下角播放/暂停按钮双重触发；新增歌词开关（按 MV 长度判断）"
-git tag v1.8.0
+git commit -m "feat: v1.8.1 — 歌词开关的时长容差放宽到 20 秒以内"
+git tag v1.8.1
 git push origin main
-git push origin v1.8.0
+git push origin v1.8.1
 ```
 
-然后到 folium-compound 的收录 issue（#192）把正文「版本 / Version (tag or commit)」字段改成 `v1.8.0`，机器人会重新检查，维护者再审一次。
+然后到 folium-compound 的收录 issue（#192）把正文「版本 / Version (tag or commit)」字段改成 `v1.8.1`，机器人会重新检查，维护者再审一次。
 
 ## 四、后续可做
 

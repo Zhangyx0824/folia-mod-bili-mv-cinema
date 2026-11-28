@@ -1122,7 +1122,7 @@ function installGlobals(window) {
 }
 
 /* ------------------------------------------------------------------ *
- * 场景 11：歌词开关（MV 与歌曲等长 + 宿主有歌词）
+ * 场景 11：歌词开关（MV 与歌曲长度差在 20s 内 + 宿主有歌词）
  * 默认关闭；打开后按 MV 自己的时间轴滚。
  * ------------------------------------------------------------------ */
 
@@ -1195,11 +1195,11 @@ function installGlobals(window) {
   assert.equal(root.querySelector('.mv-lyrline').textContent, '', '关掉后不留残字');
 
   if (typeof dispose === 'function') dispose();
-  console.log('✓ 歌词：等长 MV 才给开关，默认关，打开后按 MV 时间轴滚');
+  console.log('✓ 歌词：长度相近（差 0s）给开关，默认关，打开后按 MV 时间轴滚');
 }
 
 /* ------------------------------------------------------------------ *
- * 场景 12：长度对不上就不给歌词开关
+ * 场景 11b：长度差在 20s 以内照样给开关（B 站投稿常带几秒片头 / 片尾）
  * ------------------------------------------------------------------ */
 
 {
@@ -1228,18 +1228,61 @@ function installGlobals(window) {
   const root = window.document.querySelector('.mv-root');
   const video = root.querySelector('video');
 
-  // 这一支只有 200s，歌是 270s：不是同一段录音，歌词时间轴不能借来用
+  // 歌 270s，这一支 288s：差 18s，还在容差里（比如带了个片头）
+  video.__duration = 288;
+  video.dispatchEvent(new window.Event('loadedmetadata'));
+  await flush(3);
+
+  const btn = [...root.querySelectorAll('.mv-btn')].find((el) => String(el.title).startsWith('显示歌词'));
+  assert.ok(btn, '按钮元素要在');
+  assert.notEqual(btn.style.display, 'none', '差 18s 在 20s 容差内，要给歌词开关');
+
+  if (typeof dispose === 'function') dispose();
+  console.log('✓ 歌词：长度差 20s 以内（18s）照样给开关');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 12：长度差超过 20s 就不给歌词开关
+ * ------------------------------------------------------------------ */
+
+{
+  const lyrics = {
+    lines: [{ startTime: 0, endTime: 30, fullText: '第一句', translation: '' }],
+  };
+  const internals = {
+    stores: { playback: { getState: () => ({ currentSong: SONG, playQueue: [], lyrics }) } },
+  };
+
+  const { window, folium, calls } = makeHost({ internals });
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  const stage = window.document.createElement('div');
+  window.document.body.appendChild(stage);
+  for (const layer of calls.registered.layers) layer.mount(stage);
+
+  const bar = window.document.getElementById('bar');
+  calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+  bar.querySelector('button').click();
+  await flush(6);
+
+  const root = window.document.querySelector('.mv-root');
+  const video = root.querySelector('video');
+
+  // 这一支只有 200s，歌是 270s：差 70s，超出 20s 容差，歌词时间轴不能借来用
   video.__duration = 200;
   video.dispatchEvent(new window.Event('loadedmetadata'));
   await flush(3);
 
   const btn = [...root.querySelectorAll('.mv-btn')].find((el) => String(el.title).startsWith('显示歌词'));
   assert.ok(btn, '按钮元素本身要在（只是不显示）');
-  assert.equal(btn.style.display, 'none', '长度对不上不该出现歌词开关');
+  assert.equal(btn.style.display, 'none', '差 70s 超出容差，不该出现歌词开关');
   assert.equal(root.getAttribute('data-lyrics'), '0', '也不该显示歌词层');
 
   if (typeof dispose === 'function') dispose();
-  console.log('✓ 歌词：MV 与歌曲不等长时不给开关（免得整篇歌词跑偏）');
+  console.log('✓ 歌词：MV 与歌曲长度差超过 20s 时不给开关（免得整篇歌词跑偏）');
 }
 
 /* ------------------------------------------------------------------ *

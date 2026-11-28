@@ -8,7 +8,7 @@
 | 代码 | `bili-mv-cinema/` · `node test/smoke.mjs` + `node test/unit.mjs` 全绿（15 个场景） |
 | 预览图 | `bili-mv-cinema/preview.jpg`（真 B 站 MV 帧 + 模组真实 DOM 截图，`node test/build_preview.mjs` 可复现） |
 | 仓库 | `git@github.com:Zhangyx0824/folia-mod-bili-mv-cinema.git` |
-| 剩下的事 | push `main` + tag `v1.8.1` → 把上架 issue 的「版本」改成 `v1.8.1`，机器人重新检查 |
+| 剩下的事 | v1.7.0 已签名收录（issue #192 已关闭）；本版需**新开一个「模组更新」issue**（不是改 #192），版本填 `v1.8.1` |
 
 ### v1.8.1 改了什么
 

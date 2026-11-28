@@ -107,6 +107,15 @@ function makeHost({
   };
   window.HTMLMediaElement.prototype.load = function load() {};
 
+  // jsdom 里 duration 恒为 0。歌词开关要靠「视频时长 ≈ 歌曲时长」才亮出来，
+  // 所以给一个可写的替身，测试里按需写 video.__duration。
+  Object.defineProperty(window.HTMLMediaElement.prototype, 'duration', {
+    configurable: true,
+    get() {
+      return this.__duration || 0;
+    },
+  });
+
   // jsdom 没有 IntersectionObserver。给一个能手动「报可见」的替身：
   // 模组的封面是「滚进可视区才去问」，测试要能控制哪一行算滚进来了。
   const observers = [];
@@ -407,6 +416,28 @@ function installGlobals(window) {
   root.querySelector('.mv-btn[title="静音"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   await flush(2);
   assert.equal(video.paused, false, '点控件不该暂停画面');
+
+  // 回归：左下角那个播放 / 暂停按钮要真的生效。
+  // 它在 toggle() 里会重建自己的图标（innerHTML），如果这次点击又被画面开关
+  // 接住一次，就会「播起来 → 立刻停」，表现成按钮按了没反应。
+  const btnToggle = root.querySelector('.mv-btn[title^="播放 / 暂停"]');
+  assert.ok(btnToggle, '控制条上要有播放 / 暂停按钮');
+  // 数「视频自己的播放状态翻了几次」：一次点击只该翻一次
+  let flips = 0;
+  const countFlip = () => {
+    flips += 1;
+  };
+  video.addEventListener('play', countFlip);
+  video.addEventListener('pause', countFlip);
+  btnToggle.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await flush(2);
+  assert.equal(flips, 1, '点按钮只能切一次（切两次 = 播放完立刻暂停，看起来就是没反应）');
+  assert.equal(video.paused, true, '这会儿在播，点一下应该停住');
+  assert.match(btnToggle.innerHTML, /<path/, '停下之后图标要变成「播放」那个三角');
+  btnToggle.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await flush(2);
+  assert.equal(flips, 2, '再点一下也只切一次');
+  assert.equal(video.paused, false, '再点一下接着播');
 
   // 审核整改：整窗全屏按钮已去掉，控制条不该再出现私有全屏通道的入口
   assert.equal(
@@ -1088,6 +1119,209 @@ function installGlobals(window) {
 
   if (typeof dispose === 'function') dispose();
   console.log('✓ 音量：从 folium.storage 异步读回生效，且不覆盖用户手动调整');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 11：歌词开关（MV 与歌曲等长 + 宿主有歌词）
+ * 默认关闭；打开后按 MV 自己的时间轴滚。
+ * ------------------------------------------------------------------ */
+
+{
+  const lyrics = {
+    lines: [
+      { startTime: 0, endTime: 4, fullText: '作词：周杰伦', translation: '' },
+      { startTime: 4, endTime: 30, fullText: '第一句', translation: 'first line' },
+      { startTime: 30, endTime: 61, fullText: '第二句', translation: '' },
+    ],
+  };
+  const internals = {
+    stores: { playback: { getState: () => ({ currentSong: SONG, playQueue: QUEUE.map((it) => it.song), lyrics }) } },
+  };
+
+  const { window, folium, calls } = makeHost({ internals });
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  const stage = window.document.createElement('div');
+  window.document.body.appendChild(stage);
+  for (const layer of calls.registered.layers) layer.mount(stage);
+
+  const bar = window.document.getElementById('bar');
+  calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+  bar.querySelector('button').click();
+  await flush(6);
+
+  const root = window.document.querySelector('.mv-root');
+  const video = root.querySelector('video');
+  assert.ok(video && video.src.includes('/s/vtoken'), '要先把流挂上');
+
+  // 元数据到：这一支 270s，跟歌一样长
+  video.__duration = 270;
+  video.dispatchEvent(new window.Event('loadedmetadata'));
+  await flush(3);
+
+  const btn = [...root.querySelectorAll('.mv-btn')].find((el) => String(el.title).startsWith('显示歌词'));
+  assert.ok(btn, 'MV 跟歌一样长时，控制条上要有歌词按钮');
+  assert.notEqual(btn.style.display, 'none', '对得齐的时候要露出来');
+  assert.equal(root.getAttribute('data-lyrics'), '0', '默认不显示歌词');
+  assert.equal(root.querySelector('.mv-lyrline').textContent, '', '默认没有歌词文字');
+
+  btn.click();
+  await flush(2);
+  assert.equal(root.getAttribute('data-lyrics'), '1', '点开要显示歌词层');
+  assert.equal(root.querySelector('.mv-lyrline').textContent, '', '还没到第一句时留空');
+  assert.ok(!root.textContent.includes('作词'), '「作词：…」这种标注行不算歌词');
+  assert.equal(btn.getAttribute('data-active'), '1', '按钮要显示成打开态');
+
+  // 跟着 MV 的时间走（宿主音乐这会儿是停的，时钟只能用自己的）
+  video.currentTime = 5;
+  video.dispatchEvent(new window.Event('timeupdate'));
+  await flush(2);
+  assert.equal(root.querySelector('.mv-lyrline').textContent, '第一句');
+  assert.equal(root.querySelector('.mv-lyrtr').textContent, 'first line', '有翻译就一起显示');
+  assert.equal(root.querySelector('.mv-lyrnext').textContent, '第二句', '下一句淡淡地垫在下面');
+
+  video.currentTime = 31;
+  video.dispatchEvent(new window.Event('timeupdate'));
+  await flush(2);
+  assert.equal(root.querySelector('.mv-lyrline').textContent, '第二句');
+  assert.equal(root.querySelector('.mv-lyrtr').textContent, '', '没有翻译就不占位');
+
+  btn.click();
+  await flush(2);
+  assert.equal(root.getAttribute('data-lyrics'), '0', '再点一下关掉');
+  assert.equal(root.querySelector('.mv-lyrline').textContent, '', '关掉后不留残字');
+
+  if (typeof dispose === 'function') dispose();
+  console.log('✓ 歌词：等长 MV 才给开关，默认关，打开后按 MV 时间轴滚');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 12：长度对不上就不给歌词开关
+ * ------------------------------------------------------------------ */
+
+{
+  const lyrics = {
+    lines: [{ startTime: 0, endTime: 30, fullText: '第一句', translation: '' }],
+  };
+  const internals = {
+    stores: { playback: { getState: () => ({ currentSong: SONG, playQueue: [], lyrics }) } },
+  };
+
+  const { window, folium, calls } = makeHost({ internals });
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  const stage = window.document.createElement('div');
+  window.document.body.appendChild(stage);
+  for (const layer of calls.registered.layers) layer.mount(stage);
+
+  const bar = window.document.getElementById('bar');
+  calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+  bar.querySelector('button').click();
+  await flush(6);
+
+  const root = window.document.querySelector('.mv-root');
+  const video = root.querySelector('video');
+
+  // 这一支只有 200s，歌是 270s：不是同一段录音，歌词时间轴不能借来用
+  video.__duration = 200;
+  video.dispatchEvent(new window.Event('loadedmetadata'));
+  await flush(3);
+
+  const btn = [...root.querySelectorAll('.mv-btn')].find((el) => String(el.title).startsWith('显示歌词'));
+  assert.ok(btn, '按钮元素本身要在（只是不显示）');
+  assert.equal(btn.style.display, 'none', '长度对不上不该出现歌词开关');
+  assert.equal(root.getAttribute('data-lyrics'), '0', '也不该显示歌词层');
+
+  if (typeof dispose === 'function') dispose();
+  console.log('✓ 歌词：MV 与歌曲不等长时不给开关（免得整篇歌词跑偏）');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 13：宿主没有这份歌词时，按钮也不出现
+ * ------------------------------------------------------------------ */
+
+{
+  const internals = {
+    stores: { playback: { getState: () => ({ currentSong: SONG, playQueue: [] }) } },
+  };
+
+  const { window, folium, calls } = makeHost({ internals });
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  const stage = window.document.createElement('div');
+  window.document.body.appendChild(stage);
+  for (const layer of calls.registered.layers) layer.mount(stage);
+
+  const bar = window.document.getElementById('bar');
+  calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+  bar.querySelector('button').click();
+  await flush(6);
+
+  const root = window.document.querySelector('.mv-root');
+  const video = root.querySelector('video');
+  video.__duration = 270; // 长度是对得齐的，但没有歌词可用
+  video.dispatchEvent(new window.Event('loadedmetadata'));
+  await flush(3);
+
+  const btn = [...root.querySelectorAll('.mv-btn')].find((el) => String(el.title).startsWith('显示歌词'));
+  assert.ok(btn, '按钮元素本身要在');
+  assert.equal(btn.style.display, 'none', '没有歌词就别给一个点了没反应的按钮');
+
+  if (typeof dispose === 'function') dispose();
+  console.log('✓ 歌词：宿主没有歌词数据时按钮不出现');
+}
+
+/* ------------------------------------------------------------------ *
+ * 场景 14：歌词属于宿主当前那首，不是我们要看的那首 → 不能拿来用
+ * （从播放列表里点开另一首时，宿主还没换歌）
+ * ------------------------------------------------------------------ */
+
+{
+  const otherSong = { ...SONG, title: '七里香' };
+  const lyrics = {
+    lines: [{ startTime: 0, endTime: 30, fullText: '窗外的麻雀', translation: '' }],
+  };
+  const internals = {
+    stores: { playback: { getState: () => ({ currentSong: otherSong, playQueue: [], lyrics }) } },
+  };
+
+  const { window, folium, calls } = makeHost({ internals });
+  installGlobals(window);
+
+  const { default: activate } = await import(pathToFileURL(clientPath).href);
+  const dispose = activate(folium);
+
+  const stage = window.document.createElement('div');
+  window.document.body.appendChild(stage);
+  for (const layer of calls.registered.layers) layer.mount(stage);
+
+  const bar = window.document.getElementById('bar');
+  calls.registered.buttons[0].mount(bar, { getColors: () => ({ text: '#fff' }) });
+  bar.querySelector('button').click();
+  await flush(6);
+
+  const root = window.document.querySelector('.mv-root');
+  const video = root.querySelector('video');
+  video.__duration = 270;
+  video.dispatchEvent(new window.Event('loadedmetadata'));
+  await flush(3);
+
+  const btn = [...root.querySelectorAll('.mv-btn')].find((el) => String(el.title).startsWith('显示歌词'));
+  assert.ok(btn, '按钮元素本身要在');
+  assert.equal(btn.style.display, 'none', '宿主歌词是另一首歌的，不能挂到这上面');
+  assert.equal(root.getAttribute('data-lyrics'), '0');
+
+  if (typeof dispose === 'function') dispose();
+  console.log('✓ 歌词：宿主歌词属于另一首时不显示，避免张冠李戴');
 }
 
 console.log('\n全部通过。');

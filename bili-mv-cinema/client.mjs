@@ -63,6 +63,9 @@ const ICON_SWITCH = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none"
 /** 定位到正在看的那首 */
 const ICON_TARGET = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6.6"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/><path d="M12 2.6v2.6M12 18.8v2.6M2.6 12h2.6M18.8 12h2.6"/></svg>`;
 
+/** 歌词：三条长短不一的字，像字幕 */
+const ICON_LYRICS = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 6.4h10.2"/><path d="M3.6 12h16.8"/><path d="M3.6 17.6h8.4"/></svg>`;
+
 /* ------------------------------------------------------------------ *
  * 样式（全部作用在自己这棵树上，shadow root 里也不会串出去）
  * ------------------------------------------------------------------ */
@@ -127,6 +130,20 @@ const CSS = `
 .mv-range::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;border-radius:50%;background:#fff;
   margin-top:-3.5px;box-shadow:0 1px 5px rgba(0,0,0,.5)}
 .mv-spacer{flex:1}
+
+/* 歌词：垫在控制条上方，跟着 MV 的时间轴滚。
+   只吃自己这一层，点击穿透（pointer-events:none），不挡画面开关。 */
+.mv-lyrics{position:absolute;left:0;right:0;bottom:128px;display:none;flex-direction:column;
+  align-items:center;gap:5px;padding:0 12%;text-align:center;pointer-events:none}
+.mv-root[data-lyrics="1"] .mv-lyrics{display:flex}
+.mv-lyrline{font-size:21px;font-weight:600;line-height:1.4;letter-spacing:.01em;color:#fff;
+  text-shadow:0 2px 14px rgba(0,0,0,.75),0 0 2px rgba(0,0,0,.9);
+  white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+.mv-lyrtr{font-size:13px;line-height:1.5;color:rgba(255,255,255,.72);
+  text-shadow:0 1px 10px rgba(0,0,0,.75);white-space:normal;overflow-wrap:anywhere}
+.mv-lyrnext{margin-top:2px;font-size:13.5px;line-height:1.45;color:rgba(255,255,255,.44);
+  text-shadow:0 1px 10px rgba(0,0,0,.72);white-space:normal;overflow-wrap:anywhere}
+.mv-lyrline:empty,.mv-lyrtr:empty,.mv-lyrnext:empty{display:none}
 
 /* 画质菜单 */
 .mv-menu{position:absolute;right:0;bottom:calc(100% + 10px);min-width:156px;padding:6px;
@@ -458,6 +475,10 @@ export default function activate(folium) {
     queueIndex: null,
     /** 换源抽屉开着没（跟播放列表互斥） */
     sourceOpen: false,
+    /** 歌词开关：用户手动打开过就一直是用户的意思，换一支对不齐的 MV 只是不显示，不清这个值 */
+    lyricsOn: false,
+    /** 当前这首歌归一化后的歌词（没有 / 长度对不上时是 null） */
+    lyricsLines: null,
     generation: 0,
   };
 
@@ -821,6 +842,18 @@ export default function activate(folium) {
   spacer.className = 'mv-spacer';
   controls.appendChild(spacer);
 
+  /**
+   * 歌词开关。默认不出现、也不打开：只有当「这一支 MV 跟这首歌一样长」、
+   * 且宿主确实有这份歌词时，refreshLyricsButton 才把它亮出来。
+   */
+  const btnLyrics = document.createElement('button');
+  btnLyrics.type = 'button';
+  btnLyrics.className = 'mv-btn tall';
+  btnLyrics.title = '显示歌词（MV 与歌曲等长时可用）';
+  btnLyrics.innerHTML = `${ICON_LYRICS}<span>歌词</span>`;
+  btnLyrics.style.display = 'none';
+  controls.appendChild(btnLyrics);
+
   const btnQueue = document.createElement('button');
   btnQueue.type = 'button';
   btnQueue.className = 'mv-btn tall';
@@ -874,6 +907,20 @@ export default function activate(folium) {
 
   bottom.appendChild(controls);
   root.appendChild(bottom);
+
+  /** 歌词层：只放字，不接点击（见 CSS 的 pointer-events:none） */
+  const lyricsLayer = document.createElement('div');
+  lyricsLayer.className = 'mv-lyrics';
+  const lyrNow = document.createElement('div');
+  lyrNow.className = 'mv-lyrline';
+  const lyrTr = document.createElement('div');
+  lyrTr.className = 'mv-lyrtr';
+  const lyrNext = document.createElement('div');
+  lyrNext.className = 'mv-lyrnext';
+  lyricsLayer.appendChild(lyrNow);
+  lyricsLayer.appendChild(lyrTr);
+  lyricsLayer.appendChild(lyrNext);
+  root.appendChild(lyricsLayer);
 
   /* --- 播放列表（右侧抽屉） --- */
   const queuePanel = document.createElement('aside');
@@ -1034,6 +1081,7 @@ export default function activate(folium) {
       }
     }
     updateProgress();
+    renderLyrics(true); // 拖进度条时别等下一次 timeupdate 才对上
   }
 
   function toggle() {
@@ -1055,8 +1103,18 @@ export default function activate(folium) {
     poke();
   }
 
+  /**
+   * 只在图标真要变的时候才重建。
+   *
+   * 每次 play / pause / timeupdate 都重写一遍 innerHTML 既浪费，也会把刚被点中的
+   * 那个 svg 节点换掉（见 onChrome 的注释），能少换就少换。
+   */
+  let playIconState = '';
   function syncPlayIcon() {
-    btnPlay.innerHTML = video.paused ? ICON_PLAY : ICON_PAUSE;
+    const want = video.paused ? 'play' : 'pause';
+    if (playIconState === want) return;
+    playIconState = want;
+    btnPlay.innerHTML = want === 'play' ? ICON_PLAY : ICON_PAUSE;
   }
 
   function updateProgress() {
@@ -1108,12 +1166,15 @@ export default function activate(folium) {
 
   video.addEventListener('timeupdate', () => {
     updateProgress();
+    renderLyrics();
   });
   video.addEventListener('durationchange', updateProgress);
   video.addEventListener('loadedmetadata', () => {
     updateProgress();
     startSync();
     syncPlayIcon();
+    // 时长到了才能判断「这支 MV 跟歌是不是一样长」，歌词开关到这儿才见分晓
+    refreshLyrics();
   });
   video.addEventListener('play', () => {
     syncPlayIcon();
@@ -1156,6 +1217,159 @@ export default function activate(folium) {
     audio.removeAttribute('src');
     video.muted = state.muted;
   });
+
+  /* ---------------------------------------------------------------- *
+   * 歌词
+   *
+   * MV 播的是 B 站投稿自己的音轨，跟宿主的歌曲文件不是同一段录音，时间轴未必对得上。
+   * 所以只有「这一支视频跟这首歌一样长」时才认为它们是同一段，宿主那份歌词的时间轴
+   * 可以直接拿来用；长度对不上就不给开关，免得整篇歌词越走越偏。
+   *
+   * 歌词来源：0.8.0 的公开 song DTO 里没有歌词，跟时长 / 封面一样从
+   * `folium.internals.stores.playback` 里读宿主的 lyrics（宿主自己也在用同一份数据）。
+   * Folium 2 去掉 internals 之后这里会退化成「没有歌词」，开关自然不出现，其它功能
+   * 不受影响 —— 和时长 / 封面的兜底是同一个取舍。
+   * ---------------------------------------------------------------- */
+
+  /** 宿主歌词里的纯标注行（作词 / 作曲 / 制作人…）不当作歌词显示 */
+  const LYRIC_META_ZH = /^\s*(作词|作曲|编曲|制作人|出品|监制|混音|母带|录音|和声|吉他|贝斯|鼓|弦乐|词|曲)\s*[:：]/;
+  const LYRIC_META_EN = /^\s*(lyrics?|composer|arranger|producer|written by|mixed by|mastered by)\s*[:：]/i;
+
+  let lyricIndex = -1;
+
+  /** 把宿主那份歌词整理成 [{ start, text, tr }]，顺便丢掉纯标注行。 */
+  function hostLyrics() {
+    const snapshot = hostPlaybackStore();
+    const raw = snapshot && snapshot.lyrics;
+
+    // 宿主的歌词跟着「宿主当前这首」走。从播放列表里点开另一首时，宿主的歌还没换，
+    // 这份歌词属于上一首 —— 宁可不显示，也不能把别人的词盖在这支 MV 上。
+    const hostTitle = songTitleOf(snapshot && snapshot.currentSong).trim().toLowerCase();
+    const wantTitle = songTitleOf(state.song).trim().toLowerCase();
+    if (hostTitle && wantTitle && hostTitle !== wantTitle) return null;
+
+    const list = raw && Array.isArray(raw.lines) ? raw.lines : Array.isArray(raw) ? raw : null;
+    if (!list || !list.length) return null;
+    const lines = [];
+    for (const item of list) {
+      if (!item) continue;
+      if (typeof item === 'string') {
+        const text = item.trim();
+        if (text) lines.push({ start: 0, text, tr: '' });
+        continue;
+      }
+      const text = String(item.fullText ?? item.text ?? item.content ?? '').trim();
+      const tr = String(item.translation ?? '').trim();
+      if (!text && !tr) continue;
+      if (text && (LYRIC_META_ZH.test(text) || LYRIC_META_EN.test(text))) continue;
+      const start = Number(item.startTime ?? item.start ?? item.time ?? 0) || 0;
+      lines.push({ start: start > 0 ? start : 0, text: text || tr, tr: text ? tr : '' });
+    }
+    if (!lines.length) return null;
+    lines.sort((a, b) => a.start - b.start);
+    return lines;
+  }
+
+  /** 视频跟歌一样长（±max(5s, 2%)）才算同一段录音，歌词时间轴才能直接用。 */
+  function lyricsAligned() {
+    const songSec = songDurationSec(state.song);
+    const videoSec = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    if (!songSec || !videoSec) return false;
+    return Math.abs(videoSec - songSec) <= Math.max(5, songSec * 0.02);
+  }
+
+  /** 开着的意图（state.lyricsOn）和当前这支 MV 能不能显示，合成一个属性给 CSS。 */
+  function applyLyricsChrome() {
+    const on = !!(state.lyricsOn && state.lyricsLines);
+    root.setAttribute('data-lyrics', on ? '1' : '0');
+    btnLyrics.setAttribute('data-active', on ? '1' : '0');
+  }
+
+  /**
+   * 重新判断这首歌能不能显示歌词：宿主有歌词 + 这支 MV 跟歌一样长。
+   * 缺一个就把按钮收起来（用户原来开着的偏好留着，换到对得齐的 MV 又会出现）。
+   */
+  function refreshLyrics() {
+    const lines = hostLyrics();
+    state.lyricsLines = lines && lyricsAligned() ? lines : null;
+    btnLyrics.style.display = state.lyricsLines ? '' : 'none';
+    lyricIndex = -1;
+    applyLyricsChrome();
+    renderLyrics(true);
+  }
+
+  /**
+   * 歌词可能比视频元数据晚到（宿主是异步取歌词的）：开播后补看几次。
+   * generation / songKey 一变就作废，不会把上一首的歌词安到这一首上。
+   */
+  function watchLyrics() {
+    const key = state.song ? songKey(state.song) : '';
+    const gen = state.generation;
+    for (const delay of [1200, 3000, 6000]) {
+      window.setTimeout(() => {
+        if (!state.open || state.generation !== gen) return;
+        if (!state.song || songKey(state.song) !== key) return;
+        if (state.lyricsLines) return;
+        refreshLyrics();
+      }, delay);
+    }
+  }
+
+  /** 进影院 / 换歌时把上一首的歌词清掉，等这支 MV 的元数据到了再判断。 */
+  function resetLyrics() {
+    state.lyricsLines = null;
+    lyricIndex = -1;
+    btnLyrics.style.display = 'none';
+    lyrNow.textContent = '';
+    lyrTr.textContent = '';
+    lyrNext.textContent = '';
+    applyLyricsChrome();
+  }
+
+  /** 当前时间落在哪一句（第一句之前返回 -1）。歌词已按 start 排好序。 */
+  function lyricIndexAt(seconds) {
+    const lines = state.lyricsLines;
+    if (!lines || !lines.length) return -1;
+    let lo = 0;
+    let hi = lines.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (lines[mid].start <= seconds) {
+        found = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return found;
+  }
+
+  /** 只在句子变了的时候写 DOM：timeupdate 一秒四次也不会开销太大。 */
+  function renderLyrics(force) {
+    if (!state.lyricsOn || !state.lyricsLines) return;
+    const at = lyricIndexAt(video.currentTime || 0);
+    if (!force && at === lyricIndex) return;
+    lyricIndex = at;
+    const now = at >= 0 ? state.lyricsLines[at] : null;
+    const next = state.lyricsLines[at + 1] || null;
+    lyrNow.textContent = now ? now.text : '';
+    lyrTr.textContent = now && now.tr ? now.tr : '';
+    lyrNext.textContent = next ? next.text : '';
+  }
+
+  function setLyricsOn(flag) {
+    state.lyricsOn = !!flag;
+    applyLyricsChrome();
+    if (state.lyricsOn) {
+      lyricIndex = -1;
+      renderLyrics(true);
+    } else {
+      lyrNow.textContent = '';
+      lyrTr.textContent = '';
+      lyrNext.textContent = '';
+    }
+  }
 
   /* ---------------------------------------------------------------- *
    * 播放列表：右侧抽屉
@@ -2110,10 +2324,12 @@ export default function activate(folium) {
     state.queueIndex = null;
     setQueueOpen(false);
     setSourceOpen(false);
+    resetLyrics();
 
     kickoff();
     if (settings().pauseMusic) pauseHost();
     applyVolume();
+    watchLyrics();
 
     const cached = resolvedCache.get(songKey(song));
     if (cached) {
@@ -2141,9 +2357,11 @@ export default function activate(folium) {
     state.qualityOverride = '';
     state.queueIndex = null;
     clearMedia();
+    resetLyrics();
     if (settings().pauseMusic) pauseHost();
     applyVolume();
     renderQueue();
+    watchLyrics();
 
     const cached = resolvedCache.get(songKey(song));
     if (cached) {
@@ -2203,6 +2421,7 @@ export default function activate(folium) {
     clearMedia();
     setQueueOpen(false);
     setSourceOpen(false);
+    resetLyrics();
     root.setAttribute('data-shown', '0');
     root.setAttribute('data-idle', '0');
     if (hideTimer) {
@@ -2334,7 +2553,15 @@ export default function activate(folium) {
 
   btnBack.addEventListener('click', () => close());
   btnClose.addEventListener('click', () => close());
-  btnPlay.addEventListener('click', () => toggle());
+  /**
+   * 播放键自己处理完就够了：它在 toggle() 里会换掉自己的图标，
+   * 不让这次点击再冒泡到画面开关上去（见 onChrome 的注释）。
+   */
+  btnPlay.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggle();
+  });
+  btnLyrics.addEventListener('click', () => setLyricsOn(!state.lyricsOn));
   btnQueue.addEventListener('click', () => setQueueOpen(!state.queueOpen));
   btnQueueClose.addEventListener('click', () => setQueueOpen(false));
   btnLocate.addEventListener('click', () => scrollToCurrent(true));
@@ -2353,6 +2580,31 @@ export default function activate(folium) {
     toggle();
   });
 
+  /** 模组自己的「非画面」区域：顶栏、控制条、两个抽屉、中间卡片、登录浮层。 */
+  const CHROME_SELECTOR = '.mv-top, .mv-bottom, .mv-queue, .mv-center, .mv-login, .mv-src';
+
+  /**
+   * 这次点击是不是落在上面那些区域里。
+   *
+   * 不能用 `event.target.closest()` 一路判断到底：控制条里的按钮会在自己的 click
+   * 处理函数里换掉自己的图标（播放按钮的 syncPlayIcon 直接重建 svg），事件继续冒泡
+   * 到 root 时 target 已经脱离文档，closest() 找不到任何祖先 —— 于是这次「点按钮」
+   * 被当成「点画面」，播放/暂停连着切两次，看起来就是按钮按了没反应。
+   * composedPath() 在派发时就定好了路径，不受随后 DOM 改动的影响。
+   */
+  function onChrome(event) {
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : null;
+    if (path && path.length) {
+      for (const node of path) {
+        if (!node || node.nodeType !== 1) continue; // 只要元素，跳过 ShadowRoot / Document
+        if (typeof node.matches === 'function' && node.matches(CHROME_SELECTOR)) return true;
+      }
+      return false;
+    }
+    const target = event.target instanceof Element ? event.target : null;
+    return !!(target && target.closest(CHROME_SELECTOR));
+  }
+
   /**
    * 点画面本身就能播放 / 暂停。
    *
@@ -2361,11 +2613,9 @@ export default function activate(folium) {
    * 中间弹出来的卡片（加载失败、被拦截）上点不算，那上面有自己的按钮。
    */
   root.addEventListener('click', (event) => {
-    const target = event.target instanceof Element ? event.target : null;
-    if (!target) return;
     if (!state.open) return;
     // 点在控件、卡片、播放列表上：那是它们自己的事
-    if (target.closest('.mv-top, .mv-bottom, .mv-queue, .mv-center, .mv-login, .mv-src')) return;
+    if (onChrome(event)) return;
     if (!video.getAttribute('src')) return; // 还没取到流：画面是黑的，点了也没意义
     toggle();
   });

@@ -29,6 +29,15 @@ const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const SONG = { title: 'Photograph', artists: [{ name: 'Ed Sheeran' }], duration: 258 };
 
+/** 预览图里显示的歌词：宿主的 lyrics 就是这个形状（行按 startTime 排好序，秒） */
+const LYRICS = {
+  lines: [
+    { startTime: 0, endTime: 6, fullText: '作词：Ed Sheeran / Johnny McDaid', translation: '' },
+    { startTime: 86.4, endTime: 93, fullText: 'We keep this love in a photograph', translation: '我们把这爱封存在相片里' },
+    { startTime: 93, endTime: 97.6, fullText: 'We made these memories for ourselves', translation: '为自己留下这些回忆' },
+  ],
+};
+
 /** 右侧播放列表里要出现的那几首（同一位歌手，看得出是一张歌单）。 */
 const QUEUE_SONGS = [
   ['Photograph', 'Ed Sheeran', 258],
@@ -231,6 +240,7 @@ const RESULT = ${JSON.stringify({ ...info, quality: { ...info.quality, label: '1
 const PREVIEWS = ${JSON.stringify(previews)};
 const QUEUE_SONGS = ${JSON.stringify(QUEUE_SONGS)};
 const SONG = ${JSON.stringify(SONG)};
+const LYRICS = ${JSON.stringify(LYRICS)};
 
 const songKeyOf = (title, artist) => \`\${title}\\u241F\${artist}\`.toLowerCase();
 const queueSongs = QUEUE_SONGS.map((song, index) => ({
@@ -279,6 +289,14 @@ const folium = {
     commands: { register: () => () => {} },
   },
   theme: { resolveFontStack: () => 'sans-serif', resolveFontWeight: () => 600 },
+  // 歌词开关要「视频时长 ≈ 歌曲时长」+ 宿主这份歌词都在才会亮出来
+  internals: {
+    stores: {
+      playback: {
+        getState: () => ({ currentSong: SONG, playQueue: queueSongs.map((it) => it.song), lyrics: LYRICS }),
+      },
+    },
+  },
 };
 
 const { default: activate } = await import('/bili-mv-cinema/client.mjs');
@@ -311,6 +329,13 @@ await new Promise((resolve) => {
 video.pause();
 video.style.visibility = 'hidden';
 
+// 歌词开关看的是「视频时长 ≈ 歌曲时长」：把这一支装成跟歌一样长（4:18），
+// 时间钉在 1:29，好让歌词停在一句完整的话上。
+Object.defineProperty(video, 'duration', { configurable: true, get: () => 258 });
+Object.defineProperty(video, 'currentTime', { configurable: true, get: () => 89, set: () => {} });
+video.dispatchEvent(new Event('loadedmetadata'));
+video.dispatchEvent(new Event('timeupdate'));
+
 const frame = document.createElement('img');
 frame.src = '/frame.jpg';
 frame.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000';
@@ -339,6 +364,11 @@ root.style.setProperty('--mv-chrome-top', '40px');
 const queueBtn = [...root.querySelectorAll('.mv-btn')].find((el) => el.title.startsWith('播放列表'));
 if (queueBtn) queueBtn.click();
 await new Promise((r) => setTimeout(r, 1400));
+
+// 歌词：默认是关的，这里点开，让预览图能看出这个开关长什么样
+const lyrBtn = [...root.querySelectorAll('.mv-btn')].find((el) => String(el.title).startsWith('显示歌词'));
+if (lyrBtn) lyrBtn.click();
+await new Promise((r) => setTimeout(r, 300));
 
 root.removeAttribute('data-idle');
 document.title = 'ready';
